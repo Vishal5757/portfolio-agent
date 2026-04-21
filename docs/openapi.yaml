@@ -1,0 +1,101 @@
+openapi: 3.0.3
+info:
+  title: Portfolio Agent API
+  version: "1.0.0"
+servers:
+  - url: http://127.0.0.1:8080/api/v1
+paths:
+  /health:
+    get:
+      summary: Health check
+  /sync/excel:
+    post:
+      summary: Replace-import from workbook and recompute (requires confirm_replace=true and xlsx_path)
+  /upload/tradebook:
+    post:
+      summary: Upload broker tradebook excel (base64 payload) and append deduped trades
+  /assistant/chat:
+    post:
+      summary: Natural-language assistant actions and queries (notes-based bulk delete, portfolio/price/upload/duplicate/movers queries)
+  /prices/refresh:
+    post:
+      summary: Trigger immediate live price refresh (NSE/BSE, optional fallback)
+  /prices/status:
+    get:
+      summary: Last price refresh timestamp and priced symbol count
+  /config/live:
+    get:
+      summary: Get live refresh settings
+    put:
+      summary: Update live refresh settings
+  /portfolio/summary:
+    get:
+      summary: Portfolio totals
+  /portfolio/performance:
+    get:
+      summary: Portfolio performance by basis
+      parameters:
+        - in: query
+          name: basis
+          schema:
+            type: string
+            enum: [mtd, qtd, ytd, 1y, all, custom]
+  /portfolio/timeseries:
+    get:
+      summary: Daily portfolio values
+  /scrips:
+    get:
+      summary: Holdings list
+    post:
+      summary: Add a new scrip to portfolio universe
+  /scrips/bulk-delete:
+    post:
+      summary: Bulk delete multiple scrips and purge associated history/data
+  /scrips/{symbol}:
+    get:
+      summary: Scrip snapshot
+      parameters:
+        - in: path
+          name: symbol
+          required: true
+          schema:
+            type: string
+    delete:
+      summary: Delete scrip and entire associated history/data
+  /scrips/{symbol}/trades:
+    get:
+      summary: Trade history per scrip
+    post:
+      summary: Add individual trade for a scrip
+  /scrips/{symbol}/sell-simulate:
+    post:
+      summary: Simulate selling a quantity using matched buy lots and return projected profit breakdown
+  /trades/{id}:
+    delete:
+      summary: Delete individual trade by id
+  /scrips/{symbol}/performance:
+    get:
+      summary: Scrip performance by basis
+  /signals:
+    get:
+      summary: Current strategy signals
+  /analytics/peak-diff:
+    get:
+      summary: % diff from peak buy price for all scrips
+  /corporate-actions/splits:
+    get:
+      summary: List stock split adjustments
+    post:
+      summary: Add stock split adjustment
+  /corporate-actions/splits/{id}:
+    delete:
+      summary: Delete stock split adjustment
+  /strategy/sets:
+    get:
+      summary: Strategy parameter sets
+  /strategy/sets/active:
+    put:
+      summary: Activate a parameter set
+  /strategy/sets/{id}/parameters:
+    put:
+      summary: Update coefficients and recompute

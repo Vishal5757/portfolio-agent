@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portfolio Agent UI</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="bg-layer"></div>
+  <header class="topbar">
+    <div>
+      <h1>Portfolio Agent</h1>
+      <p id="asOfText">Live portfolio analytics from portfolio database</p>
+    </div>
+    <div class="actions">
+      <select id="tenantSelect" title="Tenant"></select>
+      <button id="tenantSwitchBtn" class="btn secondary">Switch Tenant</button>
+      <input id="tenantNewKey" placeholder="new-tenant" style="min-width: 140px;">
+      <button id="tenantCreateBtn" class="btn secondary">Create Tenant</button>
+      <span id="tenantStatusText" class="metric-inline">Tenant: default</span>
+      <button id="refreshPricesBtn" class="btn secondary">Refresh Live Prices Now</button>
+    </div>
+  </header>
+  <div id="uiNotifier" class="ui-notifier" aria-live="polite" aria-atomic="false"></div>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="assets">Assets</button>
+    <button class="tab-btn" data-tab="scrip">Scrip Detail</button>
+    <button class="tab-btn" data-tab="trades">Trade History</button>
+    <button class="tab-btn" data-tab="peak">Peak Diff</button>
+    <button class="tab-btn" data-tab="strategy">Strategy & Splits</button>
+    <button class="tab-btn" data-tab="harvest">Harvest Planner</button>
+    <button class="tab-btn" data-tab="losslots">Loss Lots</button>
+    <button class="tab-btn" data-tab="cashflow">Cashflow</button>
+    <button class="tab-btn" data-tab="dividends">Dividends</button>
+    <button class="tab-btn" data-tab="agents">Agents</button>
+    <button class="tab-btn" data-tab="approvals">Approvals & Verify</button>
+    <button class="tab-btn" data-tab="assistant">Assistant</button>
+  </nav>
+
+  <main class="layout">
+    <section class="card tab-section" data-tab="dashboard">
+      <h2>Portfolio Snapshot</h2>
+      <div id="kpiGrid" class="kpi-grid"></div>
+      <div class="row">
+        <label for="basisSelect">Performance Basis</label>
+        <select id="basisSelect">
+          <option value="mtd">MTD</option>
+          <option value="qtd">QTD</option>
+          <option value="ytd" selected>YTD</option>
+          <option value="1y">1Y</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>
+          <input id="liveEnabled" type="checkbox" checked>
+          Live Price Refresh
+        </label>
+        <label for="liveIntervalSec">Interval (sec)</label>
+        <input id="liveIntervalSec" type="number" min="5" step="1" value="10">
+        <button id="saveLiveCfgBtn" class="btn secondary">Apply Refresh Config</button>
+      </div>
+      <div class="row">
+        <span id="pricesStatusText" class="metric">Prices: pending</span>
+      </div>
+      <div class="row">
+        <label for="tradebookFile">Upload Tradebook (.xlsx)</label>
+        <input id="tradebookFile" type="file" accept=".xlsx">
+        <button id="uploadTradebookBtn" class="btn secondary">Upload Tradebook</button>
+      </div>
+      <div id="perfSummary" class="perf-summary"></div>
+      <div class="row">
+        <label>Chart Range</label>
+        <button id="tsRange1M" class="btn secondary">1M</button>
+        <button id="tsRange3M" class="btn secondary">3M</button>
+        <button id="tsRange6M" class="btn secondary">6M</button>
+        <button id="tsRange1Y" class="btn secondary">1Y</button>
+        <button id="tsRangeAll" class="btn secondary">All</button>
+        <button id="tsResetView" class="btn secondary">Reset View</button>
+      </div>
+      <div class="chart-wrap">
+        <svg id="tsChart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
+        <div id="tsTooltip" class="chart-tooltip hidden"></div>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="dashboard">
+      <h2>Holdings</h2>
+      <div class="row">
+        <label for="holdingsFilterSymbol">Filter Symbol</label>
+        <input id="holdingsFilterSymbol" placeholder="type symbol">
+        <label for="holdingsFilterSignal">Signal</label>
+        <select id="holdingsFilterSignal">
+          <option value="">All</option>
+          <option value="BUY">BUY/B1/B2</option>
+          <option value="SELL">S1/S2/S3</option>
+        </select>
+        <label for="holdingsFilterMinRet">Min Return %</label>
+        <input id="holdingsFilterMinRet" type="number" step="0.01" placeholder="-100">
+        <label for="holdingsFilterMaxRet">Max Return %</label>
+        <input id="holdingsFilterMaxRet" type="number" step="0.01" placeholder="1000">
+      </div>
+      <div id="holdingsTableWrap" class="table-wrap">
+        <div class="table-title">Active Holdings (Qty &gt; 0) <span id="holdingsActiveCount" class="metric-inline">0</span></div>
+        <table id="holdingsTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort-key="symbol">Symbol</th>
+              <th class="sortable" data-sort-key="qty">Qty</th>
+              <th class="sortable" data-sort-key="ltp">LTP</th>
+              <th class="sortable" data-sort-key="avg_cost">Avg Cost</th>
+              <th class="sortable" data-sort-key="invested">Invested</th>
+              <th class="sortable" data-sort-key="dividend_amount">Dividend</th>
+              <th class="sortable" data-sort-key="market_value">Mkt Value</th>
+              <th class="sortable" data-sort-key="realized_pnl">RPL</th>
+              <th class="sortable" data-sort-key="unrealized_pnl">UPL</th>
+              <th class="sortable" data-sort-key="abs_pnl">Abs P/L</th>
+              <th class="sortable" data-sort-key="upl_pct">UPL %</th>
+              <th class="sortable" data-sort-key="day_pnl">Day P/L</th>
+              <th class="sortable" data-sort-key="day_change_pct">Day %</th>
+              <th class="sortable" data-sort-key="total_return_pct">Return %</th>
+              <th class="sortable" data-sort-key="peak_traded_price">Peak Traded</th>
+              <th class="sortable" data-sort-key="pct_from_peak_traded">% From Peak Traded</th>
+              <th class="sortable" data-sort-key="signal">Action (Signal)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="holdingsZeroTableWrap" class="table-wrap subhead">
+        <div class="table-title">Zero Qty Scrips <span id="holdingsZeroCount" class="metric-inline">0</span></div>
+        <table id="holdingsZeroTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort-key="symbol">Symbol</th>
+              <th class="sortable" data-sort-key="qty">Qty</th>
+              <th class="sortable" data-sort-key="ltp">LTP</th>
+              <th class="sortable" data-sort-key="avg_cost">Avg Cost</th>
+              <th class="sortable" data-sort-key="invested">Invested</th>
+              <th class="sortable" data-sort-key="dividend_amount">Dividend</th>
+              <th class="sortable" data-sort-key="market_value">Mkt Value</th>
+              <th class="sortable" data-sort-key="realized_pnl">RPL</th>
+              <th class="sortable" data-sort-key="unrealized_pnl">UPL</th>
+              <th class="sortable" data-sort-key="abs_pnl">Abs P/L</th>
+              <th class="sortable" data-sort-key="upl_pct">UPL %</th>
+              <th class="sortable" data-sort-key="day_pnl">Day P/L</th>
+              <th class="sortable" data-sort-key="day_change_pct">Day %</th>
+              <th class="sortable" data-sort-key="total_return_pct">Return %</th>
+              <th class="sortable" data-sort-key="peak_traded_price">Peak Traded</th>
+              <th class="sortable" data-sort-key="pct_from_peak_traded">% From Peak Traded</th>
+              <th class="sortable" data-sort-key="signal">Action (Signal)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2 class="subhead">Position Size Planner</h2>
+      <p>Enter buy/sell percent of total active portfolio market value to get suggested quantity by scrip. Lock a lot to persist qty over multiple days, then mark each row as Closed or Skipped.</p>
+      <div class="row">
+        <label for="rebalanceSide">Side</label>
+        <select id="rebalanceSide">
+          <option value="SELL">SELL</option>
+          <option value="BUY">BUY</option>
+        </select>
+        <label for="rebalancePercent">Percent</label>
+        <input id="rebalancePercent" type="number" min="0.01" max="100" step="0.01" value="10">
+        <button id="rebalanceSuggestBtn" class="btn secondary">Suggest Quantity</button>
+        <button id="rebalanceLockLotBtn" class="btn">Lock Qty Lot</button>
+        <button id="rebalanceResetLotBtn" class="btn secondary">Reset Lot</button>
+        <button id="rebalanceSaveGuardsBtn" class="btn secondary">Save Min/Max Limits</button>
+        <span id="rebalanceStamp" class="metric">Planner: -</span>
+      </div>
+      <div id="rebalanceSummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <table id="rebalanceTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Current Mkt Value</th>
+              <th>Min Value (Persisted)</th>
+              <th>Max Value (Persisted)</th>
+              <th>Desired Trade Value</th>
+              <th>Locked Qty (Editable)</th>
+              <th>Remaining Qty</th>
+              <th>Remaining Trade Value</th>
+              <th>Post-Trade Value</th>
+              <th>Note</th>
+              <th>Execution</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3 class="subhead">Closed Lot History</h3>
+      <div class="row">
+        <button id="rebalanceHistoryRefreshBtn" class="btn secondary">Refresh Closed History</button>
+        <label for="rebalanceHistoryShowCompleted">Show Buyback Completed</label>
+        <input id="rebalanceHistoryShowCompleted" type="checkbox">
+        <span id="rebalanceHistoryStamp" class="metric">Closed history: -</span>
+      </div>
+      <div id="rebalanceHistorySummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <table id="rebalanceHistoryTable">
+          <thead>
+            <tr>
+              <th>Lot</th>
+              <th>Item</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Closed Price</th>
+              <th>Executed At</th>
+              <th>Current LTP</th>
+              <th>Re-buy Price (Manual)</th>
+              <th>P/L Saved</th>
+              <th>Buyback Status</th>
+              <th>Note</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="assets">
+      <h2>Asset Split</h2>
+      <p>Equity and Gold holdings are tracked separately.</p>
+      <div id="assetSplitSummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Gold Holdings</div>
+        <table id="assetGoldTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Qty (gms)</th>
+              <th>LTP (/gm)</th>
+              <th>Avg Cost (/gm)</th>
+              <th>Invested</th>
+              <th>Market Value</th>
+              <th>Unrealized P/L</th>
+              <th>Return %</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Equity Holdings</div>
+        <table id="assetEquityTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Invested</th>
+              <th>Market Value</th>
+              <th>Unrealized P/L</th>
+              <th>Return %</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card two-col tab-section" data-tab="scrip">
+      <div>
+        <h2>Scrip Detail</h2>
+        <div class="row">
+          <label for="symbolSelect">Scrip</label>
+          <select id="symbolSelect"></select>
+        </div>
+        <div id="scripStats" class="scrip-stats"></div>
+        <h2 class="subhead">Sell Profit Simulator</h2>
+        <div class="row">
+          <label id="sellSimQtyLabel" for="sellSimQty">Qty To Sell</label>
+          <input id="sellSimQty" type="number" step="0.0001" min="0.0001" placeholder="10">
+          <label id="sellSimPriceLabel" for="sellSimPrice">Sell Price</label>
+          <input id="sellSimPrice" type="number" step="0.0001" min="0.0001" placeholder="uses LTP if blank">
+          <button id="sellSimBtn" class="btn secondary">Simulate</button>
+        </div>
+        <div id="sellSimSummary" class="perf-summary"></div>
+        <div class="table-wrap">
+          <table id="sellSimTable">
+            <thead>
+              <tr>
+                <th>Buy Date</th>
+                <th>Buy Price</th>
+                <th>Qty Sold</th>
+                <th>Cost</th>
+                <th>Sell Price</th>
+                <th>Proceeds</th>
+                <th>Profit</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h2>Scrip Performance</h2>
+        <div class="row">
+          <label for="scripBasisSelect">Basis</label>
+          <select id="scripBasisSelect">
+            <option value="mtd">MTD</option>
+            <option value="qtd">QTD</option>
+            <option value="ytd" selected>YTD</option>
+            <option value="1y">1Y</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div id="scripPerf" class="perf-summary"></div>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="trades">
+      <h2>Trade History</h2>
+      <div class="row">
+        <span id="tradeEditFor" class="metric">For Scrip: -</span>
+        <span id="tradesCurrentProfitText" class="metric">Trade P/L: -</span>
+        <label for="tradeAddDate">Date</label>
+        <input id="tradeAddDate" type="date">
+        <label for="tradeAddSide">Side</label>
+        <select id="tradeAddSide">
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+        </select>
+        <label id="tradeAddQtyLabel" for="tradeAddQty">Qty</label>
+        <input id="tradeAddQty" type="number" step="0.0001" min="0.0001">
+        <label id="tradeAddPriceLabel" for="tradeAddPrice">Price</label>
+        <input id="tradeAddPrice" type="number" step="0.0001" min="0.0001">
+        <label for="tradeAddNotes">Notes</label>
+        <input id="tradeAddNotes" placeholder="manual correction">
+        <button id="tradeAddBtn" class="btn secondary">Add Trade</button>
+      </div>
+      <div class="row">
+        <label for="tradesFilterSide">Side</label>
+        <select id="tradesFilterSide">
+          <option value="">All</option>
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+        </select>
+        <label for="tradesFilterFrom">From</label>
+        <input id="tradesFilterFrom" type="date">
+        <label for="tradesFilterTo">To</label>
+        <input id="tradesFilterTo" type="date">
+        <label for="tradesFilterText">Search</label>
+        <input id="tradesFilterText" placeholder="notes / value">
+      </div>
+      <div class="table-wrap">
+        <table id="tradesTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date</th>
+              <th>Side</th>
+              <th id="tradesQtyHeader">Qty</th>
+              <th id="tradesPriceHeader">Price</th>
+              <th id="tradesAmountHeader">Amount</th>
+              <th id="tradesLtpHeader">Ref LTP</th>
+              <th>Trade P/L</th>
+              <th>Notes</th>
+              <th>Delete</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="peak">
+      <h2>% Diff from Peak Traded Price</h2>
+      <div class="row">
+        <label for="peakFilterSymbol">Filter Symbol</label>
+        <input id="peakFilterSymbol" placeholder="type symbol">
+        <label for="peakFilterMinPct">Min %</label>
+        <input id="peakFilterMinPct" type="number" step="0.01" placeholder="-100">
+        <label for="peakFilterMaxPct">Max %</label>
+        <input id="peakFilterMaxPct" type="number" step="0.01" placeholder="500">
+      </div>
+      <div class="row">
+        <span id="peakSplitReviewStatus" class="metric">Pending split confirmations: 0</span>
+      </div>
+      <div class="table-wrap">
+        <table id="peakTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>LTP</th>
+              <th>Peak Traded Price</th>
+              <th>% Diff (LTP vs Peak Traded)</th>
+              <th>Split Review</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="strategy">
+      <h2>Strategy Coefficients</h2>
+      <div class="row">
+        <label for="strategySelect">Parameter Set</label>
+        <select id="strategySelect"></select>
+        <button id="activateSetBtn" class="btn secondary">Activate</button>
+        <button id="refreshStrategyBtn" class="btn secondary">Refresh Strategy Insights</button>
+      </div>
+      <div id="paramsGrid" class="params-grid"></div>
+      <button id="saveParamsBtn" class="btn">Save + Recompute</button>
+
+      <h2 class="subhead">Rotation Strategy</h2>
+      <p>Reasons are short by design. For full explanation ask Assistant: <code>explain strategy reason for &lt;symbol&gt;</code></p>
+      <div id="strategySummary" class="perf-summary"></div>
+      <div class="chart-wrap">
+        <svg id="strategyProjectionChart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
+        <div id="strategyTooltip" class="chart-tooltip hidden"></div>
+      </div>
+      <div class="table-wrap">
+        <table id="strategyRecoTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Action</th>
+              <th>Priority</th>
+              <th>Current Wt</th>
+              <th>Target Wt</th>
+              <th>Delta Wt</th>
+              <th>LTP</th>
+              <th>Buy Zone</th>
+              <th>Trim Zone</th>
+              <th>Confidence</th>
+              <th>Expected Annual</th>
+              <th>Intel Score</th>
+              <th>Intel Conf</th>
+              <th>Agent Finding</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2 class="subhead">Intelligence Agent</h2>
+      <div class="row">
+        <button id="intelRefreshBtn" class="btn secondary">Refresh Intelligence</button>
+        <span id="intelStatusText" class="metric">Intelligence: pending</span>
+      </div>
+      <div class="row">
+        <label for="intelDocType">Doc Type</label>
+        <select id="intelDocType">
+          <option value="commentary">YouTube/Commentary</option>
+          <option value="policy">Budget/Policy</option>
+          <option value="financial_statement">Financial Statement Context</option>
+        </select>
+        <label for="intelDocSource">Source</label>
+        <input id="intelDocSource" placeholder="youtube / policy pdf / research note">
+        <label for="intelDocRef">Source Ref</label>
+        <input id="intelDocRef" placeholder="URL or reference">
+      </div>
+      <div class="row">
+        <label for="intelDocDate">Doc Date</label>
+        <input id="intelDocDate" type="date">
+        <label for="intelDocTitle">Title</label>
+        <input id="intelDocTitle" placeholder="Budget speech highlights">
+        <label for="intelDocFile">Transcript File</label>
+        <input id="intelDocFile" type="file" accept=".txt,.md,.json,.csv">
+      </div>
+      <div class="row">
+        <label for="intelDocContent">Commentary / Policy Text</label>
+        <textarea id="intelDocContent" rows="5" style="width: 100%; min-width: 360px;" placeholder="Paste transcript / policy fine print / commentary text"></textarea>
+        <button id="intelAnalyzeBtn" class="btn secondary">Analyze Document</button>
+      </div>
+      <div class="row">
+        <label for="intelFinSymbol">Symbol</label>
+        <input id="intelFinSymbol" placeholder="INFY" list="stockSuggestions">
+        <label for="intelFinPeriod">Fiscal Period</label>
+        <input id="intelFinPeriod" placeholder="FY26-Q1">
+        <label for="intelFinDate">Report Date</label>
+        <input id="intelFinDate" type="date">
+        <label for="intelFinSource">Source</label>
+        <input id="intelFinSource" placeholder="company_filing">
+      </div>
+      <div class="row">
+        <label for="intelFinRevenue">Revenue</label>
+        <input id="intelFinRevenue" type="number" step="0.01" placeholder="0">
+        <label for="intelFinPAT">PAT</label>
+        <input id="intelFinPAT" type="number" step="0.01" placeholder="0">
+        <label for="intelFinOCF">OCF</label>
+        <input id="intelFinOCF" type="number" step="0.01" placeholder="0">
+        <label for="intelFinICF">ICF</label>
+        <input id="intelFinICF" type="number" step="0.01" placeholder="0">
+        <label for="intelFinFCF">FCF</label>
+        <input id="intelFinFCF" type="number" step="0.01" placeholder="0">
+        <label for="intelFinDebt">Debt</label>
+        <input id="intelFinDebt" type="number" step="0.01" placeholder="0">
+      </div>
+      <div class="row">
+        <label for="intelFinFII">FII %</label>
+        <input id="intelFinFII" type="number" step="0.01" placeholder="0">
+        <label for="intelFinDII">DII %</label>
+        <input id="intelFinDII" type="number" step="0.01" placeholder="0">
+        <label for="intelFinProm">Promoter %</label>
+        <input id="intelFinProm" type="number" step="0.01" placeholder="0">
+        <label for="intelFinNotes">Notes</label>
+        <input id="intelFinNotes" placeholder="optional notes">
+        <button id="intelFinancialAddBtn" class="btn secondary">Add/Update Financial QoQ</button>
+      </div>
+      <div id="intelSummary" class="perf-summary"></div>
+      <div class="table-wrap">
+        <table id="intelImpactTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Intel Score</th>
+              <th>Confidence</th>
+              <th>Commentary</th>
+              <th>Policy</th>
+              <th>Financials</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table id="intelFlowTable">
+          <thead>
+            <tr>
+              <th>From</th>
+              <th>To</th>
+              <th>Flow Score</th>
+              <th>Period</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2 class="subhead">Scrip Management</h2>
+      <div class="row">
+        <label for="newSymbol">Symbol</label>
+        <input id="newSymbol" placeholder="INFY" list="stockSuggestions">
+        <label for="newExchange">Exchange</label>
+        <select id="newExchange">
+          <option value="NSE">NSE</option>
+          <option value="BSE">BSE</option>
+        </select>
+        <label for="newFeedCode">Feed Code (BSE scrip code)</label>
+        <input id="newFeedCode" placeholder="500325">
+        <label for="newAssetClass">Asset Class</label>
+        <select id="newAssetClass">
+          <option value="EQUITY">EQUITY</option>
+          <option value="GOLD">GOLD</option>
+        </select>
+        <button id="addScripBtn" class="btn secondary">Add Scrip</button>
+      </div>
+      <div class="row">
+        <label for="deleteSymbol">Delete Scrip (purge all history)</label>
+        <input id="deleteSymbol" placeholder="INFY" list="stockSuggestions">
+        <button id="deleteScripBtn" class="btn secondary">Delete Scrip + History</button>
+      </div>
+      <div class="row">
+        <label for="bulkDeleteSymbols">Bulk Delete Scrips</label>
+        <select id="bulkDeleteSymbols" multiple size="8"></select>
+        <button id="bulkDeleteScripBtn" class="btn secondary">Bulk Delete Selected</button>
+      </div>
+
+      <h2 class="subhead">Stock Split Adjustments</h2>
+      <div class="row">
+        <label for="splitSymbol">Symbol</label>
+        <input id="splitSymbol" placeholder="WIPRO" list="stockSuggestions">
+        <label for="splitDate">Effective Date</label>
+        <input id="splitDate" type="date">
+        <label for="splitFactor">Factor</label>
+        <input id="splitFactor" type="number" step="0.0001" min="0.0001" placeholder="5">
+        <button id="addSplitBtn" class="btn secondary">Add Split</button>
+      </div>
+      <div class="row">
+        <label for="splitsFilterSymbol">Filter Split Symbol</label>
+        <input id="splitsFilterSymbol" placeholder="type symbol">
+      </div>
+      <div class="table-wrap">
+        <table id="splitsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Symbol</th>
+              <th>Effective Date</th>
+              <th>Factor</th>
+              <th>Note</th>
+              <th>Delete</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <button id="splitChartResetBtn" class="btn secondary">Reset Split Chart</button>
+      </div>
+      <div class="chart-wrap">
+        <svg id="splitTimelineChart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
+        <div id="splitChartTooltip" class="chart-tooltip hidden"></div>
+      </div>
+    </section>
+
+    <section class="card tab-section hidden" data-tab="harvest">
+      <h2>Capital Gain Harvest Planner</h2>
+      <p>Plan loss harvesting from current losers and pair it with profit-booking candidates that can absorb gains later. Suggestions are split by tax bucket so STCG and LTCG are planned separately, not just by current profit percentage.</p>
+      <div class="row">
+        <label for="harvestTargetLoss">Target Loss To Harvest</label>
+        <input id="harvestTargetLoss" type="number" min="0" step="0.01" value="0" placeholder="enter amount">
+        <button id="harvestRefreshBtn" class="btn secondary">Refresh Harvest Plan</button>
+        <button id="harvestRunAnalysisBtn" class="btn">Run Dynamic Analysis</button>
+        <span id="harvestStatusText" class="metric">Harvest planner: -</span>
+      </div>
+      <div id="harvestSummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Loss Harvest Candidates</div>
+        <table id="harvestLossTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Buy Date</th>
+              <th>Tax</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Held Days</th>
+              <th>UPL</th>
+              <th>Loss Available</th>
+              <th>Likely</th>
+              <th>Strategy</th>
+              <th>Suggest Qty</th>
+              <th>Suggest Loss</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Profit Offset Candidates</div>
+        <table id="harvestProfitTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Buy Date</th>
+              <th>Tax</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Held Days</th>
+              <th>UPL</th>
+              <th>Profit Available</th>
+              <th>Likely</th>
+              <th>Strategy</th>
+              <th>Suggest Qty</th>
+              <th>Suggest Profit</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <div class="table-title">Dynamic Analysis</div>
+        <div id="harvestAnalysisMeta" class="metric-inline" style="padding: 8px 10px;">Mode: -</div>
+        <pre id="harvestAnalysisText" class="analysis-block">No analysis yet.</pre>
+      </div>
+    </section>
+
+    <section class="card tab-section hidden" data-tab="losslots">
+      <h2>Loss Lots</h2>
+      <p>Lists every open buy lot currently in loss as an individual trade row, sorted by highest loss first. This view is separate from harvest planning.</p>
+      <div class="row">
+        <button id="lossLotsRefreshBtn" class="btn secondary">Refresh Loss Lots</button>
+        <span id="lossLotsStatusText" class="metric">Loss lots: -</span>
+      </div>
+      <div id="lossLotsSummary" class="perf-summary"></div>
+      <div class="table-wrap">
+        <div class="table-title">Top 10 STCG Loss Lots</div>
+        <table id="lossLotsStcgTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Buy Date</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Held Days</th>
+              <th>Loss Available</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <div class="table-title">Top 10 LTCG Loss Lots</div>
+        <table id="lossLotsLtcgTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Buy Date</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Held Days</th>
+              <th>Loss Available</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <div class="table-title">Top 10 STCG Profit Lots</div>
+        <table id="lossLotsStcgProfitTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Buy Date</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Held Days</th>
+              <th>Profit Available</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <div class="table-title">Top 10 LTCG Profit Lots</div>
+        <table id="lossLotsLtcgProfitTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Buy Date</th>
+              <th>Qty</th>
+              <th>LTP</th>
+              <th>Avg Cost</th>
+              <th>Held Days</th>
+              <th>Profit Available</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="cashflow">
+      <h2>Cashflow (Payin/Payout)</h2>
+      <div class="row">
+        <label for="cashflowFile">Upload Cashflow (.xlsx)</label>
+        <input id="cashflowFile" type="file" accept=".xlsx">
+        <label><input id="cashflowReplaceAll" type="checkbox"> Replace Existing Cashflow</label>
+        <button id="uploadCashflowBtn" class="btn secondary">Upload Cashflow</button>
+      </div>
+      <div id="cashflowSummary" class="perf-summary"></div>
+      <div class="row">
+        <label for="cashflowFilterType">Type</label>
+        <select id="cashflowFilterType">
+          <option value="">All</option>
+          <option value="deposit">Deposit</option>
+          <option value="withdrawal">Withdrawal</option>
+          <option value="trade_credit">Trade Credit</option>
+          <option value="investment">Investment Spend</option>
+          <option value="charge">Charge (DP/AMC etc)</option>
+        </select>
+        <label for="cashflowFilterFrom">From</label>
+        <input id="cashflowFilterFrom" type="date">
+        <label for="cashflowFilterTo">To</label>
+        <input id="cashflowFilterTo" type="date">
+        <label for="cashflowFilterText">Search</label>
+        <input id="cashflowFilterText" placeholder="ref / notes / id">
+      </div>
+      <div class="table-wrap">
+        <table id="cashflowTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Reference</th>
+              <th>Entry ID</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="dividends">
+      <h2>Dividends</h2>
+      <div class="row">
+        <label for="dividendFile">Upload Dividend Statement (.xlsx)</label>
+        <input id="dividendFile" type="file" accept=".xlsx">
+        <label><input id="dividendReplaceAll" type="checkbox"> Replace Existing Dividends</label>
+        <button id="uploadDividendBtn" class="btn secondary">Upload Dividends</button>
+      </div>
+      <div id="dividendSummary" class="perf-summary"></div>
+      <div class="row">
+        <label for="dividendFilterSymbol">Symbol</label>
+        <input id="dividendFilterSymbol" placeholder="KITEX">
+        <label for="dividendFilterFrom">From</label>
+        <input id="dividendFilterFrom" type="date">
+        <label for="dividendFilterTo">To</label>
+        <input id="dividendFilterTo" type="date">
+        <label for="dividendFilterText">Search</label>
+        <input id="dividendFilterText" placeholder="ref / id">
+      </div>
+      <div class="table-wrap">
+        <table id="dividendTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Amount</th>
+              <th>Reference</th>
+              <th>Entry ID</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="agents">
+      <h2>Agent Control</h2>
+      <p>Control background agents for live quotes, history sync, strategy refresh, intelligence autopilot, self-learning, and DB backup.</p>
+      <div class="row">
+        <button id="refreshAgentsBtn" class="btn secondary">Refresh Agent Status</button>
+        <button id="openAgentBacktestBtn" class="btn secondary">Backtest Agents</button>
+        <span id="agentsStatusStamp" class="metric">Last refreshed: -</span>
+      </div>
+      <div class="table-wrap">
+        <table id="agentsTable">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Enabled</th>
+              <th>Interval</th>
+              <th>Last Run</th>
+              <th>Details</th>
+              <th>Control</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2 class="subhead">LLM Runtime</h2>
+      <p>Configure the model used for dynamic analysis and software-improvement proposals. Status and last error are shown here.</p>
+      <div class="row">
+        <label for="llmApiKeyInput">API Key</label>
+        <input id="llmApiKeyInput" type="password" placeholder="sk-..." style="min-width: 220px;">
+        <label for="llmModelInput">Model</label>
+        <input id="llmModelInput" type="text" value="gpt-4.1-mini" style="min-width: 160px;">
+        <label for="llmApiUrlInput">API URL</label>
+        <input id="llmApiUrlInput" type="text" value="https://api.openai.com/v1/responses" style="min-width: 280px; flex: 1;">
+      </div>
+      <div class="row">
+        <button id="saveLlmConfigBtn" class="btn secondary">Save LLM Settings</button>
+        <button id="testLlmConfigBtn" class="btn secondary">Test LLM</button>
+        <span id="llmStatusText" class="metric">LLM: -</span>
+      </div>
+      <div id="llmSummary" class="perf-summary"></div>
+
+      <h2 class="subhead">Software Performance Log Viewer</h2>
+      <p>Track what the Software Performance Agent changed, unresolved issues, and what got resolved.</p>
+      <div class="row">
+        <button id="refreshSoftwarePerfBtn" class="btn secondary">Refresh Performance Logs</button>
+        <span id="softwarePerfStamp" class="metric">Software logs: -</span>
+      </div>
+      <div id="softwarePerfSummary" class="perf-summary"></div>
+      <div class="table-wrap">
+        <table id="softwarePerfOpenIssuesTable">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Issue</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th>Resolved At</th>
+              <th>Occurrences</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="softwarePerfActionsWrap" class="table-wrap table-wrap-rows-5">
+        <table id="softwarePerfActionsTable">
+          <thead>
+            <tr>
+              <th>Created At</th>
+              <th>Action Type</th>
+              <th>Status</th>
+              <th>Summary</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="approvals">
+      <h2>Approvals & Verification</h2>
+      <p>Review pending requests, execution trail, and whether suggested software changes are currently applied.</p>
+      <div class="row">
+        <span id="approvalTabPendingCount" class="metric">Pending approvals: 0</span>
+        <button id="refreshApprovalTabBtn" class="btn secondary">Refresh Approvals</button>
+        <button id="refreshApprovalVerifyBtn" class="btn secondary">Refresh Verification</button>
+        <span id="approvalVerifyStamp" class="metric">Verification: -</span>
+      </div>
+      <div id="approvalVerifySummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <table id="approvalsTabTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Created</th>
+              <th>Status</th>
+              <th>Action</th>
+              <th>Summary</th>
+              <th>Query</th>
+              <th>Decision</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2 class="subhead">Change Summary</h2>
+      <div class="table-wrap table-wrap-rows-5">
+        <table id="approvalChangeSummaryTable">
+          <thead>
+            <tr>
+              <th>Created At</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Summary</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h2 class="subhead">Verification Checks</h2>
+      <div class="table-wrap table-wrap-rows-5">
+        <table id="approvalVerifyChecksTable">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Key</th>
+              <th>Expected</th>
+              <th>Current</th>
+              <th>Applied</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section" data-tab="assistant">
+      <h2>Assistant</h2>
+      <p>Use commands for bulk trade cleanup. Example: <code>erase trades notes like "upload:tradebook-OWY330.xlsx"</code></p>
+      <div class="row">
+        <span id="approvalPendingCount" class="metric">Pending approvals: 0</span>
+        <button id="refreshApprovalsBtn" class="btn secondary">Refresh Notifier</button>
+      </div>
+      <div class="table-wrap">
+        <table id="approvalsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Created</th>
+              <th>Status</th>
+              <th>Action</th>
+              <th>Summary</th>
+              <th>Query</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="assistantChatLog" class="assistant-chat-log"></div>
+      <div class="row">
+        <input id="assistantChatInput" placeholder='Type command, or "help"' style="min-width: 420px; flex: 1;">
+        <button id="assistantChatSendBtn" class="btn secondary">Send</button>
+      </div>
+    </section>
+  </main>
+
+  <datalist id="stockSuggestions"></datalist>
+
+  <div id="skipOverrideModal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Skipped Upload Entries</h2>
+      <p id="skipOverrideSummary">Review and override-add individually if needed.</p>
+      <div class="table-wrap">
+        <table id="skipOverrideTable">
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Reason</th>
+              <th>Symbol</th>
+              <th>Date</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Price</th>
+              <th>Trade ID</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <button id="skipOverrideCloseBtn" class="btn secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="peakSplitReviewModal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Peak Traded Split Confirmation</h2>
+      <p id="peakSplitReviewSummary">Confirm which split-years should be applied for peak traded calculations.</p>
+      <div class="table-wrap">
+        <table id="peakSplitReviewTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Split Year</th>
+              <th>Effective Date</th>
+              <th>Factor</th>
+              <th>Buys Before Split</th>
+              <th>First Buy</th>
+              <th>Last Buy Before Split</th>
+              <th>Note</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <button id="peakSplitReviewCloseBtn" class="btn secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="agentBacktestModal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Agent Backtest + Auto-Tune</h2>
+      <p>Run backtest, inspect data-pipe diagnostics, and optionally auto-apply tuned coefficients.</p>
+      <div class="row">
+        <label for="btFromDate">From</label>
+        <input id="btFromDate" type="date">
+        <label for="btToDate">To</label>
+        <input id="btToDate" type="date">
+        <label for="btHorizonDays">Horizon (days)</label>
+        <input id="btHorizonDays" type="number" min="3" max="90" step="1" value="20">
+        <label for="btMinSamples">Min Samples</label>
+        <input id="btMinSamples" type="number" min="5" max="5000" step="1" value="30">
+      </div>
+      <div class="row">
+        <label><input id="btApplyTuning" type="checkbox" checked> Apply Tuning</label>
+        <label><input id="btFixPipes" type="checkbox" checked> Fix Data Pipes Before Backtest</label>
+        <button id="runAgentBacktestBtn" class="btn secondary">Run Backtest</button>
+      </div>
+      <div id="agentBacktestSummary" class="perf-summary"></div>
+      <div class="table-wrap">
+        <table id="agentBacktestSuggestionsTable">
+          <thead>
+            <tr>
+              <th>Parameter</th>
+              <th>Before</th>
+              <th>Suggested</th>
+              <th>After</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table id="agentBacktestDiagnosticsTable">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Before</th>
+              <th>After</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table id="agentBacktestHistoryTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Created</th>
+              <th>From</th>
+              <th>To</th>
+              <th>Horizon</th>
+              <th>Samples</th>
+              <th>Hit Rate</th>
+              <th>Tuned</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <button id="agentBacktestCloseBtn" class="btn secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
