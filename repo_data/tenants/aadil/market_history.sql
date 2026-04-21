@@ -1,4 +1,4 @@
--- Repository snapshot generated at 2026-04-21T23:49:53
+-- Repository snapshot generated at 2026-04-22T00:00:25
 -- Source database: market_history.db
 BEGIN TRANSACTION;
 CREATE TABLE daily_prices (
