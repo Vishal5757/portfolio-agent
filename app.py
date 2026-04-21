@@ -12,6 +12,7 @@ import os
 import random
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -52,6 +53,7 @@ DB_PATH = DATA_DIR / "portfolio.db"
 MARKET_HISTORY_DB_PATH = DATA_DIR / "market_history.db"
 UPLOAD_DIR = DATA_DIR / "uploads"
 BACKUP_DIR = DATA_DIR / "backups"
+REPO_DATA_DIR = ROOT / "repo_data"
 TENANTS_ROOT = DATA_DIR / "tenants"
 TENANTS_META_PATH = DATA_DIR / "tenants.json"
 TENANT_MAX_COUNT = 5
@@ -76,6 +78,12 @@ LLM_DEFAULT_MODEL = "gpt-4.1-mini"
 LLM_DEFAULT_API_URL = "https://api.openai.com/v1/responses"
 RISK_AGENT_INTERVAL_DEFAULT_SEC = 6 * 60 * 60
 RISK_AGENT_MIN_INTERVAL_SEC = 15 * 60
+REPO_SYNC_INTERVAL_DEFAULT_SEC = 60 * 60
+REPO_SYNC_MIN_INTERVAL_SEC = 5 * 60
+GIT_EXE_CANDIDATES = (
+    Path(r"C:\Program Files\Git\cmd\git.exe"),
+    Path(r"C:\Program Files\Git\bin\git.exe"),
+)
 INTEL_FIN_BACKFILL_MIN_INTERVAL_SEC = 6 * 60 * 60
 INTEL_FIN_BACKFILL_MAX_SYMBOLS = 60
 INTEL_FIN_BACKFILL_MAX_RUNTIME_SEC = 18
@@ -1236,6 +1244,11 @@ def ensure_default_config():
         "backup_agent_enabled": "1",
         "backup_last_run_at": "",
         "backup_last_file": "",
+        "repo_sync_enabled": "1",
+        "repo_sync_interval_sec": str(REPO_SYNC_INTERVAL_DEFAULT_SEC),
+        "repo_sync_auto_push": "1",
+        "repo_sync_last_run_at": "",
+        "repo_sync_last_error": "",
         "self_learning_enabled": "1",
         "self_learning_interval_days": "7",
         "self_learning_last_run_at": "",
@@ -1321,6 +1334,97 @@ def backup_database():
         )
         conn.commit()
     return str(target)
+
+
+def find_git_executable():
+    for p in GIT_EXE_CANDIDATES:
+        try:
+            if p.exists():
+                return str(p)
+        except Exception:
+            continue
+    return None
+
+
+def git_run(args, cwd=None, check=True):
+    git_exe = find_git_executable()
+    if not git_exe:
+        raise RuntimeError("git_executable_not_found")
+    proc = subprocess.run(
+        [git_exe] + list(args),
+        cwd=str(cwd or ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or f"git_failed_{proc.returncode}").strip())
+    return proc
+
+
+def _sql_dump_for_db(db_path):
+    dbp = Path(db_path)
+    if not dbp.exists():
+        return ""
+    conn = sqlite3.connect(str(dbp))
+    try:
+        lines = list(conn.iterdump())
+    finally:
+        conn.close()
+    body = "\n".join(lines).strip()
+    if body:
+        body += "\n"
+    header = (
+        f"-- Repository snapshot generated at {now_iso()}\n"
+        f"-- Source database: {dbp.name}\n"
+    )
+    return header + body
+
+
+def export_repo_data_snapshots():
+    ensure_tenant_bootstrap()
+    REPO_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tenants_dir = REPO_DATA_DIR / "tenants"
+    tenants_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "generated_at": now_iso(),
+        "tenants": [],
+    }
+    for tenant in list_tenants():
+        key = sanitize_tenant_key(tenant.get("key")) or DEFAULT_TENANT_KEY
+        paths = tenant_paths(key)
+        out_dir = tenants_dir / key
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "portfolio.sql").write_text(_sql_dump_for_db(paths["db_path"]), encoding="utf-8")
+        (out_dir / "market_history.sql").write_text(_sql_dump_for_db(paths["market_db_path"]), encoding="utf-8")
+        manifest["tenants"].append(
+            {
+                "key": key,
+                "name": tenant.get("name"),
+                "portfolio_sql": str((out_dir / "portfolio.sql").relative_to(ROOT)),
+                "market_history_sql": str((out_dir / "market_history.sql").relative_to(ROOT)),
+            }
+        )
+    repo_readme = (
+        "# Repo Data Snapshot\n\n"
+        "This folder stores Git-tracked SQL snapshots of all tenant SQLite databases.\n"
+        "The application updates these files so repository backups stay current without committing live .db binaries.\n"
+    )
+    (REPO_DATA_DIR / "README.md").write_text(repo_readme, encoding="utf-8")
+    (REPO_DATA_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def sync_repo_data_snapshots_to_git():
+    manifest = export_repo_data_snapshots()
+    status = git_run(["status", "--porcelain", "--", "repo_data"], check=True)
+    if not str(status.stdout or "").strip():
+        return {"ok": True, "changed": False, "manifest": manifest}
+    git_run(["add", "repo_data"], check=True)
+    commit_msg = f"Sync repo data snapshot {now_iso()}"
+    git_run(["commit", "-m", commit_msg], check=True)
+    git_run(["push", "origin", "main"], check=True)
+    return {"ok": True, "changed": True, "manifest": manifest, "commit_message": commit_msg}
 
 
 def get_live_config(conn):
@@ -2134,6 +2238,24 @@ def get_backup_config(conn):
         "interval_seconds": DB_BACKUP_INTERVAL_SEC,
         "last_run_at": last_run,
         "last_file": last_file,
+    }
+
+
+def get_repo_sync_config(conn):
+    rows = conn.execute(
+        "SELECT key, value FROM app_config WHERE key IN ('repo_sync_enabled','repo_sync_interval_sec','repo_sync_auto_push','repo_sync_last_run_at','repo_sync_last_error')"
+    ).fetchall()
+    cfg = {r["key"]: r["value"] for r in rows}
+    try:
+        interval = int(float(cfg.get("repo_sync_interval_sec", str(REPO_SYNC_INTERVAL_DEFAULT_SEC))))
+    except Exception:
+        interval = REPO_SYNC_INTERVAL_DEFAULT_SEC
+    return {
+        "enabled": str(cfg.get("repo_sync_enabled", "1")) == "1",
+        "auto_push": str(cfg.get("repo_sync_auto_push", "1")) == "1",
+        "interval_seconds": max(REPO_SYNC_MIN_INTERVAL_SEC, interval),
+        "last_run_at": str(cfg.get("repo_sync_last_run_at", "") or ""),
+        "last_error": str(cfg.get("repo_sync_last_error", "") or ""),
     }
 
 
@@ -16919,6 +17041,48 @@ def db_backup_worker(stop_event):
         stop_event.wait(timeout=max(60 * 60, int(sleep_for)))
 
 
+def repo_data_sync_worker(stop_event):
+    while not stop_event.is_set():
+        sleep_for = REPO_SYNC_INTERVAL_DEFAULT_SEC
+        try:
+            with tenant_context(DEFAULT_TENANT_KEY):
+                with db_connect() as conn:
+                    cfg = get_repo_sync_config(conn)
+                sleep_for = int(cfg.get("interval_seconds", REPO_SYNC_INTERVAL_DEFAULT_SEC))
+                if cfg.get("enabled"):
+                    err = ""
+                    if cfg.get("auto_push"):
+                        try:
+                            sync_repo_data_snapshots_to_git()
+                        except Exception as ex:
+                            err = str(ex)
+                    else:
+                        try:
+                            export_repo_data_snapshots()
+                        except Exception as ex:
+                            err = str(ex)
+                    with db_connect() as conn:
+                        run_at = now_iso()
+                        conn.execute(
+                            """
+                            INSERT INTO app_config(key, value, updated_at) VALUES ('repo_sync_last_run_at', ?, ?)
+                            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                            """,
+                            (run_at, run_at),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO app_config(key, value, updated_at) VALUES ('repo_sync_last_error', ?, ?)
+                            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                            """,
+                            (err, run_at),
+                        )
+                        conn.commit()
+        except Exception:
+            pass
+        stop_event.wait(timeout=max(REPO_SYNC_MIN_INTERVAL_SEC, int(sleep_for)))
+
+
 def strategy_worker(stop_event):
     while not stop_event.is_set():
         sleep_for = STRATEGY_REFRESH_MIN_SEC
@@ -17000,9 +17164,11 @@ def serve(port):
     ensure_tenant_bootstrap()
     init_db()
     repair_results = repair_all_tenants_market_data_once()
+    export_repo_data_snapshots()
     stop_event = threading.Event()
     worker = threading.Thread(target=live_price_worker, args=(stop_event,), daemon=True)
     backup_worker = threading.Thread(target=db_backup_worker, args=(stop_event,), daemon=True)
+    repo_sync_worker_thread = threading.Thread(target=repo_data_sync_worker, args=(stop_event,), daemon=True)
     strat_worker = threading.Thread(target=strategy_worker, args=(stop_event,), daemon=True)
     hist_worker = threading.Thread(target=history_worker, args=(stop_event,), daemon=True)
     intel_worker = threading.Thread(target=intelligence_autopilot_worker, args=(stop_event,), daemon=True)
@@ -17011,6 +17177,7 @@ def serve(port):
     risk_worker = threading.Thread(target=risk_analysis_worker, args=(stop_event,), daemon=True)
     worker.start()
     backup_worker.start()
+    repo_sync_worker_thread.start()
     strat_worker.start()
     hist_worker.start()
     intel_worker.start()

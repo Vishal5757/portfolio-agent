@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-04-21T18:57:03",
+  "tenants": [
+    {
+      "key": "default",
+      "name": "Default",
+      "portfolio_sql": "repo_data\\tenants\\default\\portfolio.sql",
+      "market_history_sql": "repo_data\\tenants\\default\\market_history.sql"
+    },
+    {
+      "key": "aadil",
+      "name": "Aadil",
+      "portfolio_sql": "repo_data\\tenants\\aadil\\portfolio.sql",
+      "market_history_sql": "repo_data\\tenants\\aadil\\market_history.sql"
+    }
+  ]
+}

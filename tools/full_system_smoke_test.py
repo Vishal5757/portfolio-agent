@@ -340,6 +340,10 @@ def run():
         expect("sanitize_latest_price_day_change_outliers(conn, fetched_at)" in py, "live refresh not sanitizing implausible day-change values")
         expect("def repair_all_tenants_market_data_once(" in py, "cross-tenant market-data repair missing")
         expect("repair_results = repair_all_tenants_market_data_once()" in py, "startup does not run cross-tenant market-data repair")
+        expect("def export_repo_data_snapshots(" in py, "repo data snapshot exporter missing")
+        expect("def sync_repo_data_snapshots_to_git(" in py, "repo data git sync helper missing")
+        expect("def repo_data_sync_worker(stop_event):" in py, "repo data sync worker missing")
+        expect("export_repo_data_snapshots()" in py, "startup does not export repo data snapshots")
 
     check("exchange_day_change_contract", exchange_day_change_contract)
     check("intel_autopilot_get", lambda: req("GET", "/api/v1/intel/autopilot", expected=200))
