@@ -1483,7 +1483,7 @@ def ensure_default_config():
         "backup_last_file": "",
         "repo_sync_enabled": "1",
         "repo_sync_interval_sec": str(REPO_SYNC_INTERVAL_DEFAULT_SEC),
-        "repo_sync_auto_push": "1",
+        "repo_sync_auto_push": "0",
         "repo_sync_last_run_at": "",
         "repo_sync_last_error": "",
         "self_learning_enabled": "1",
@@ -1822,8 +1822,9 @@ def export_repo_data_snapshots():
         )
     repo_readme = (
         "# Repo Data Snapshot\n\n"
-        "This folder stores Git-tracked SQL snapshots of all tenant SQLite databases.\n"
-        "The application updates these files so repository backups stay current without committing live .db binaries.\n"
+        "This folder stores local SQL exports of all tenant SQLite databases.\n"
+        "On `main`, the heavy tenant snapshot files are intentionally left untracked to keep Git fast and stable.\n"
+        "If you need a Git-backed archive, use the dedicated `data-snapshots` branch instead of committing dumps to `main`.\n"
     )
     (REPO_DATA_DIR / "README.md").write_text(repo_readme, encoding="utf-8")
     (REPO_DATA_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -2667,7 +2668,7 @@ def get_repo_sync_config(conn):
         interval = REPO_SYNC_INTERVAL_DEFAULT_SEC
     return {
         "enabled": str(cfg.get("repo_sync_enabled", "1")) == "1",
-        "auto_push": str(cfg.get("repo_sync_auto_push", "1")) == "1",
+        "auto_push": str(cfg.get("repo_sync_auto_push", "0")) == "1",
         "interval_seconds": max(REPO_SYNC_MIN_INTERVAL_SEC, interval),
         "last_run_at": str(cfg.get("repo_sync_last_run_at", "") or ""),
         "last_error": str(cfg.get("repo_sync_last_error", "") or ""),

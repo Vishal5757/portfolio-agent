@@ -20,3 +20,7 @@ venv/
 
 dist/
 build/
+
+# Keep heavy SQL snapshot exports out of the day-to-day code branch.
+repo_data/manifest.json
+repo_data/tenants/

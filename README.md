@@ -78,6 +78,12 @@ Refactor direction: continue moving domain logic from `app.py` into `portfolio_a
 ## Import Model
 
 - DB is the source of truth at runtime.
+
+## Repository Data Policy
+
+- `main` is kept focused on application code and lightweight assets.
+- Local SQL snapshot exports live under `repo_data/`, but the heavy tenant dump files are intentionally not tracked on `main`.
+- If you want a Git-backed archive of snapshot exports, use the dedicated `data-snapshots` branch rather than pushing large SQL dumps to `main`.
 - Startup does not auto-read any Excel file.
 - Use UI tradebook upload (`Upload Tradebook`) for all future trade updates.
 - Optional one-time historical bootstrap from workbook:
