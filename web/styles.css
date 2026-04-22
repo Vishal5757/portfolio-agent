@@ -662,3 +662,27 @@ td .btn {
 #rebalanceHistoryTable .rebalance-history-buyback-complete-btn {
   margin-left: 6px;
 }
+
+.year-dividend-table {
+  grid-column: 1 / -1;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-family: "Consolas", "Courier New", monospace;
+  margin-top: 8px;
+  width: auto;
+}
+.year-dividend-table th {
+  text-align: left;
+  padding: 4px 14px 4px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.year-dividend-table td {
+  padding: 3px 14px 3px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.year-dividend-table td.num {
+  text-align: right;
+  padding-right: 14px;
+}

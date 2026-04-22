@@ -17605,6 +17605,18 @@ def dividend_summary(conn):
         LIMIT 5
         """
     ).fetchall()
+    by_year = conn.execute(
+        """
+        SELECT
+          STRFTIME('%Y', entry_date) AS year,
+          COUNT(*) AS entries,
+          COALESCE(SUM(amount), 0) AS total_dividend
+        FROM dividends
+        WHERE entry_date IS NOT NULL AND TRIM(entry_date) <> ''
+        GROUP BY year
+        ORDER BY year DESC
+        """
+    ).fetchall()
     return {
         "entries": int(row["entries"] or 0),
         "total_dividend": round(parse_float(row["total_dividend"], 0.0), 2),
@@ -17613,6 +17625,14 @@ def dividend_summary(conn):
         "top_symbols": [
             {"symbol": r["symbol"], "total_dividend": round(parse_float(r["total_dividend"], 0.0), 2)}
             for r in by_symbol
+        ],
+        "by_year": [
+            {
+                "year": r["year"],
+                "entries": int(r["entries"] or 0),
+                "total_dividend": round(parse_float(r["total_dividend"], 0.0), 2),
+            }
+            for r in by_year
         ],
     }
 

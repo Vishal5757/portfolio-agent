@@ -4440,12 +4440,31 @@ function renderDividendSummary(s) {
   const topTxt = top.length
     ? top.map((x) => `${x.symbol}: ${money(x.total_dividend)}`).join(" | ")
     : "-";
+  const byYear = Array.isArray(s.by_year) ? s.by_year : [];
+  const yearRows = byYear.map((y) => `
+    <tr>
+      <td>${y.year || "-"}</td>
+      <td class="num">${y.entries}</td>
+      <td class="num pos">${money(y.total_dividend)}</td>
+    </tr>`).join("");
+  const yearTable = byYear.length ? `
+    <table class="year-dividend-table">
+      <thead>
+        <tr>
+          <th>Year</th>
+          <th class="num">Entries</th>
+          <th class="num">Total Dividend</th>
+        </tr>
+      </thead>
+      <tbody>${yearRows}</tbody>
+    </table>` : "";
   $("dividendSummary").innerHTML = `
     <div class="metric">Entries: ${Number(s.entries || 0)}</div>
     <div class="metric">Total Dividend Profit: ${money(s.total_dividend)}</div>
     <div class="metric">From: ${s.from_date || "-"}</div>
     <div class="metric">To: ${s.to_date || "-"}</div>
     <div class="metric">Top Scrips: ${topTxt}</div>
+    ${yearTable}
   `;
 }
 
