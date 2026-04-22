@@ -94,6 +94,96 @@ CREATE TABLE IF NOT EXISTS rebalance_lot_items (
 CREATE INDEX IF NOT EXISTS ix_rebalance_lot_items_lot ON rebalance_lot_items(lot_id, id);
 CREATE INDEX IF NOT EXISTS ix_rebalance_lot_items_symbol ON rebalance_lot_items(symbol);
 
+CREATE TABLE IF NOT EXISTS daily_target_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seed_capital REAL NOT NULL DEFAULT 10000,
+  target_profit_pct REAL NOT NULL DEFAULT 1,
+  target_profit_value REAL NOT NULL DEFAULT 0,
+  top_n INTEGER NOT NULL DEFAULT 5,
+  status TEXT NOT NULL CHECK (status IN ('active','completed','reset')) DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_recalibrated_at TEXT,
+  closed_at TEXT,
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_daily_target_plans_status_created ON daily_target_plans(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS daily_target_plan_pairs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL REFERENCES daily_target_plans(id) ON DELETE CASCADE,
+  priority_rank INTEGER NOT NULL DEFAULT 1,
+  state TEXT NOT NULL DEFAULT 'pending',
+  sell_symbol TEXT NOT NULL,
+  sell_qty REAL NOT NULL DEFAULT 0,
+  sell_ref_price REAL NOT NULL DEFAULT 0,
+  sell_trade_value REAL NOT NULL DEFAULT 0,
+  sell_target_price REAL NOT NULL DEFAULT 0,
+  sell_score REAL NOT NULL DEFAULT 0,
+  sell_reason TEXT,
+  buy_symbol TEXT NOT NULL,
+  buy_qty REAL NOT NULL DEFAULT 0,
+  buy_ref_price REAL NOT NULL DEFAULT 0,
+  buy_trade_value REAL NOT NULL DEFAULT 0,
+  buy_target_exit_price REAL NOT NULL DEFAULT 0,
+  buy_score REAL NOT NULL DEFAULT 0,
+  buy_reason TEXT,
+  expected_profit_value REAL NOT NULL DEFAULT 0,
+  rotation_score REAL NOT NULL DEFAULT 0,
+  current_sell_ref_price REAL NOT NULL DEFAULT 0,
+  current_buy_ref_price REAL NOT NULL DEFAULT 0,
+  target_progress_pct REAL NOT NULL DEFAULT 0,
+  matched_sell_trade_id INTEGER,
+  matched_buy_trade_id INTEGER,
+  reconciliation_status TEXT NOT NULL DEFAULT 'unmatched',
+  executed_sell_price REAL,
+  executed_sell_at TEXT,
+  executed_buy_price REAL,
+  executed_buy_at TEXT,
+  completion_note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_recalibrated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_daily_target_pairs_plan_rank ON daily_target_plan_pairs(plan_id, priority_rank, id);
+CREATE INDEX IF NOT EXISTS ix_daily_target_pairs_state ON daily_target_plan_pairs(state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS daily_target_pair_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL REFERENCES daily_target_plans(id) ON DELETE CASCADE,
+  pair_id INTEGER NOT NULL REFERENCES daily_target_plan_pairs(id) ON DELETE CASCADE,
+  captured_at TEXT NOT NULL,
+  sell_ref_price REAL NOT NULL DEFAULT 0,
+  buy_ref_price REAL NOT NULL DEFAULT 0,
+  expected_profit_value REAL NOT NULL DEFAULT 0,
+  rotation_score REAL NOT NULL DEFAULT 0,
+  buy_target_exit_price REAL NOT NULL DEFAULT 0,
+  snapshot_note TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_daily_target_pair_snapshots_plan_time ON daily_target_pair_snapshots(plan_id, captured_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS daily_target_positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_pair_id INTEGER NOT NULL REFERENCES daily_target_plan_pairs(id) ON DELETE CASCADE,
+  symbol TEXT NOT NULL,
+  qty REAL NOT NULL DEFAULT 0,
+  initial_qty REAL NOT NULL DEFAULT 0,
+  closed_qty REAL NOT NULL DEFAULT 0,
+  entry_price REAL NOT NULL DEFAULT 0,
+  entry_value REAL NOT NULL DEFAULT 0,
+  realized_profit REAL NOT NULL DEFAULT 0,
+  entry_at TEXT NOT NULL,
+  exit_pair_id INTEGER,
+  exit_price REAL,
+  exit_value REAL,
+  exit_at TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_daily_target_positions_symbol_status ON daily_target_positions(symbol, status, entry_at);
+CREATE INDEX IF NOT EXISTS ix_daily_target_positions_pair ON daily_target_positions(source_pair_id, id);
+
 CREATE TABLE IF NOT EXISTS lot_closures (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol TEXT NOT NULL,
@@ -298,6 +388,70 @@ CREATE TABLE IF NOT EXISTS strategy_projection_points (
   projected_value REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_strategy_projection_run ON strategy_projection_points(run_date, scenario, year_offset);
+
+CREATE TABLE IF NOT EXISTS strategy_audit_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  strategy_run_date TEXT,
+  audit_mode TEXT NOT NULL DEFAULT 'heuristic',
+  overall_status TEXT NOT NULL DEFAULT 'ok',
+  overall_score REAL NOT NULL DEFAULT 0,
+  summary TEXT,
+  recommendation TEXT,
+  findings_count INTEGER NOT NULL DEFAULT 0,
+  stats_json TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_strategy_audit_runs_created ON strategy_audit_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_audit_findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  audit_id INTEGER NOT NULL REFERENCES strategy_audit_runs(id) ON DELETE CASCADE,
+  severity TEXT NOT NULL,
+  code TEXT NOT NULL,
+  title TEXT NOT NULL,
+  detail TEXT,
+  symbol TEXT,
+  metric_value REAL,
+  expected_range TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_strategy_audit_findings_audit ON strategy_audit_findings(audit_id, severity, id);
+
+CREATE TABLE IF NOT EXISTS tax_rate_sync_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('success','error')),
+  source_label TEXT NOT NULL,
+  source_url TEXT,
+  stcg_rate_pct REAL,
+  ltcg_rate_pct REAL,
+  ltcg_exemption_limit REAL,
+  stt_delivery_rate REAL,
+  stamp_buy_rate REAL,
+  gst_rate REAL,
+  dp_charge_sell REAL,
+  detail TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tax_rate_sync_runs_created ON tax_rate_sync_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS attention_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL,
+  severity_rank INTEGER NOT NULL DEFAULT 0,
+  severity_label TEXT NOT NULL DEFAULT 'info',
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  title TEXT NOT NULL,
+  detail TEXT,
+  source_ref TEXT,
+  detected_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  resolved_at TEXT,
+  meta_json TEXT,
+  occurrence_count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_attention_alerts_status_rank ON attention_alerts(status, severity_rank DESC, last_seen_at DESC);
 
 CREATE TABLE IF NOT EXISTS agent_backtest_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

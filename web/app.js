@@ -42,6 +42,11 @@ const state = {
   latestPriceUpdatedAt: "",
   harvestPlanRaw: null,
   harvestPlanMeta: null,
+  strategyAuditRaw: null,
+  attentionRaw: null,
+  dailyTargetPlanRaw: null,
+  dailyTargetHistoryRaw: [],
+  dailyTargetDrafts: {},
   llmConfigRaw: null,
 };
 
@@ -724,6 +729,8 @@ function renderAgents(items) {
         } else if (agent === "software_performance") {
           await loadLlmConfig();
           await loadSoftwarePerfLogs();
+        } else if (agent === "tax_monitor") {
+          await loadAttentionConsole().catch(() => {});
         }
       } catch (e) {
         alert(`Agent update failed: ${e.message}`);
@@ -773,6 +780,8 @@ function renderAgents(items) {
           if (state.selectedSymbol) await loadScrip(state.selectedSymbol);
           await loadLlmConfig();
           await loadSoftwarePerfLogs();
+        } else if (agent === "tax_monitor") {
+          await loadAttentionConsole();
         }
       } catch (e) {
         alert(`Agent run failed: ${e.message}`);
@@ -2702,6 +2711,400 @@ async function loadLossLots(options = {}) {
   }
 }
 
+function dailyTargetStateOptions(currentState) {
+  const current = String(currentState || "pending").toLowerCase();
+  return [
+    ["pending", "Pending"],
+    ["sell_done", "Sell Done"],
+    ["buy_done", "Buy Done"],
+    ["executed", "Done"],
+    ["skipped", "Skipped"],
+  ]
+    .map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function dailyTargetReconLabel(row) {
+  const status = String(row?.reconciliation_status || "unmatched").toLowerCase();
+  if (status === "matched") return "Matched";
+  if (status === "partial") return "Partial";
+  return "Unmatched";
+}
+
+function dailyTargetReconClass(row) {
+  const status = String(row?.reconciliation_status || "unmatched").toLowerCase();
+  if (status === "matched") return "pos";
+  if (status === "partial") return "";
+  return "neg";
+}
+
+function isClosedDailyTargetState(rawState) {
+  const s = String(rawState || "").toLowerCase();
+  return s === "executed" || s === "skipped" || s === "replaced";
+}
+
+function renderDailyTargetHistory(payload) {
+  const body = $("dailyTargetHistoryTable")?.querySelector("tbody");
+  if (!body) return;
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const summary = payload?.summary || {};
+  state.dailyTargetHistoryRaw = items;
+  if ($("dailyTargetHistorySummary")) {
+    $("dailyTargetHistorySummary").innerHTML = `
+      <div class="metric">Shown: ${Number(summary.filtered_count ?? items.length)}</div>
+      <div class="metric">Total: ${Number(summary.total_count ?? items.length)}</div>
+      <div class="metric">Done: ${Number(summary.executed || 0)}</div>
+      <div class="metric">Pending: ${Number(summary.pending || 0)}</div>
+      <div class="metric">Sell Done: ${Number(summary.sell_done || 0)}</div>
+      <div class="metric">Buy Done: ${Number(summary.buy_done || 0)}</div>
+      <div class="metric">Skipped: ${Number(summary.skipped || 0)}</div>
+      <div class="metric">Replaced: ${Number(summary.replaced || 0)}</div>
+      <div class="metric pos">Matched: ${Number(summary.matched || 0)}</div>
+      <div class="metric ${Number(summary.unmatched || 0) > 0 ? "neg" : ""}">Unmatched: ${Number(summary.unmatched || 0)}</div>
+      <div class="metric">From: ${escapeHtml(String(summary.date_from || "-"))}</div>
+      <div class="metric">To: ${escapeHtml(String(summary.date_to || "-"))}</div>
+      <div class="metric">State Filter: ${escapeHtml(String(summary.state_filter || "all"))}</div>
+    `;
+  }
+  body.innerHTML = items.length
+    ? items
+        .map(
+          (r) => `
+            <tr>
+              <td>${escapeHtml(String(r.updated_at || "-"))}</td>
+              <td>${Number(r.plan_id || 0)}</td>
+              <td>${Number(r.priority_rank || 0)}</td>
+              <td>${escapeHtml(String(r.state || "-"))}</td>
+              <td>${escapeHtml(String(r.sell_symbol || ""))} x ${money(r.sell_qty)}</td>
+              <td>${escapeHtml(String(r.buy_symbol || ""))} x ${money(r.buy_qty)}</td>
+              <td>${money(r.seed_capital)}</td>
+              <td>${pct(r.target_profit_pct)}</td>
+              <td class="${clsBySign(r.expected_profit_value)}">${money(r.expected_profit_value)}</td>
+              <td>${money(r.current_buy_value)}</td>
+              <td class="${clsBySign(r.live_mtm_pnl)}">${money(r.live_mtm_pnl)}</td>
+              <td class="${dailyTargetReconClass(r)}">${escapeHtml(dailyTargetReconLabel(r))}</td>
+              <td>${r.executed_sell_value ? money(r.executed_sell_value) : "-"}</td>
+              <td>${r.executed_buy_value ? money(r.executed_buy_value) : "-"}</td>
+              <td class="reason-cell">${escapeHtml(String(r.completion_note || ""))}</td>
+            </tr>`
+        )
+        .join("")
+    : '<tr><td colspan="15">No tracked rotation history yet.</td></tr>';
+}
+
+function bindDailyTargetTableActions() {
+  const rememberDraft = (row) => {
+    const pairId = Number(row?.querySelector(".daily-target-save-btn")?.getAttribute("data-pair-id") || 0);
+    if (!pairId) return;
+    state.dailyTargetDrafts[pairId] = {
+      state: row?.querySelector(".daily-target-state-select")?.value || "pending",
+      executed_sell_price: row?.querySelector(".daily-target-sell-price")?.value || "",
+      executed_sell_at: row?.querySelector(".daily-target-sell-date")?.value || "",
+      executed_buy_price: row?.querySelector(".daily-target-buy-price")?.value || "",
+      executed_buy_at: row?.querySelector(".daily-target-buy-date")?.value || "",
+      note: row?.querySelector(".daily-target-note")?.value || "",
+    };
+  };
+  Array.from(
+    document.querySelectorAll(
+      "#dailyTargetTable .daily-target-state-select, #dailyTargetTable .daily-target-sell-price, #dailyTargetTable .daily-target-sell-date, #dailyTargetTable .daily-target-buy-price, #dailyTargetTable .daily-target-buy-date, #dailyTargetTable .daily-target-note"
+    )
+  ).forEach((el) => {
+    const eventName = el.matches("select, input[type='date']") ? "change" : "input";
+    el.addEventListener(eventName, () => {
+      const row = el.closest("tr");
+      if (row) rememberDraft(row);
+    });
+    if (eventName !== "change") {
+      el.addEventListener("change", () => {
+        const row = el.closest("tr");
+        if (row) rememberDraft(row);
+      });
+    }
+  });
+  Array.from(document.querySelectorAll("#dailyTargetTable .daily-target-save-btn")).forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const itemId = Number(btn.getAttribute("data-pair-id") || 0);
+      const row = btn.closest("tr");
+      const stateEl = row?.querySelector(".daily-target-state-select");
+      const sellPriceEl = row?.querySelector(".daily-target-sell-price");
+      const sellDateEl = row?.querySelector(".daily-target-sell-date");
+      const buyPriceEl = row?.querySelector(".daily-target-buy-price");
+      const buyDateEl = row?.querySelector(".daily-target-buy-date");
+      const noteEl = row?.querySelector(".daily-target-note");
+      if (!itemId || !stateEl) return;
+      if ($("dailyTargetStatusText")) {
+        $("dailyTargetStatusText").textContent = `Updating rotation item ${itemId}: ${new Date().toLocaleString()}`;
+      }
+      try {
+        const out = await api(`/api/v1/daily-target/pairs/${itemId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            state: stateEl.value,
+            executed_sell_price: sellPriceEl?.value || null,
+            executed_sell_at: sellDateEl?.value || null,
+            executed_buy_price: buyPriceEl?.value || null,
+            executed_buy_at: buyDateEl?.value || null,
+            note: noteEl?.value || "",
+          }),
+        });
+        delete state.dailyTargetDrafts[itemId];
+        renderDailyTargetPlan(out || {});
+        await loadDailyTargetHistory();
+        const savedRow = Array.isArray(out?.pairs) ? out.pairs.find((r) => Number(r?.pair_id || 0) === itemId) : null;
+        const savedStateLabel = savedRow?.state ? String(savedRow.state).replaceAll("_", " ") : "updated";
+        if ($("dailyTargetStatusText")) {
+          $("dailyTargetStatusText").textContent = `Rotation item ${savedStateLabel}: ${new Date().toLocaleString()}`;
+        }
+      } catch (e) {
+        const meta = normalizeUiError(e, "DAILY_TARGET_UPDATE_FAILED");
+        if ($("dailyTargetStatusText")) $("dailyTargetStatusText").textContent = `Daily target error: ${meta.reason}`;
+        throw e;
+      }
+    });
+  });
+}
+
+function renderDailyTargetPlan(payload) {
+  const p = payload || {};
+  const plan = p.plan || {};
+  const summary = p.summary || {};
+  const perf = p.performance || {};
+  const pairs = Array.isArray(p.pairs) ? p.pairs : [];
+  const activePairs = pairs.filter((r) => !isClosedDailyTargetState(r?.state));
+  const completedPairs = pairs.filter((r) => isClosedDailyTargetState(r?.state));
+  const snapshots = Array.isArray(p.snapshots) ? p.snapshots : [];
+  state.dailyTargetPlanRaw = p;
+  if ($("dailyTargetSummary")) {
+    const taxMode = String(summary.tax_mode || "-").replaceAll("_", " ");
+    const zerodhaCostModel = String(summary.zerodha_cost_model || "-").replaceAll("_", " ");
+    $("dailyTargetSummary").innerHTML = `
+      <div class="metric">Plan: ${plan.id ? `#${Number(plan.id)}` : "-"}</div>
+      <div class="metric">Seed Capital: ${money(summary.seed_capital)}</div>
+      <div class="metric">Target %: ${pct(summary.target_profit_pct)}</div>
+      <div class="metric ${clsBySign(summary.target_profit_value)}">Target Profit: ${money(summary.target_profit_value)}</div>
+      <div class="metric ${clsBySign(summary.projected_pending_profit)}">Projected Pending Profit: ${money(summary.projected_pending_profit)}</div>
+      <div class="metric">Pending: ${Number(summary.pending_pairs || 0)}</div>
+      <div class="metric">Sell Done: ${Number(summary.sell_done_pairs || 0)}</div>
+      <div class="metric">Buy Done: ${Number(summary.buy_done_pairs || 0)}</div>
+      <div class="metric">Executed: ${Number(summary.executed_pairs || 0)}</div>
+      <div class="metric">Skipped: ${Number(summary.skipped_pairs || 0)}</div>
+      <div class="metric">Replaced: ${Number(summary.replaced_pairs || 0)}</div>
+      <div class="metric">Status: ${escapeHtml(String(plan.status || "-"))}</div>
+      <div class="metric">Tax Mode: ${escapeHtml(taxMode)}</div>
+      <div class="metric">STCG Tax: ${pct(summary.equity_stcg_tax_pct)}</div>
+      <div class="metric">LTCG Tax: ${pct(summary.equity_ltcg_tax_pct)}</div>
+      <div class="metric">LTCG Exemption Limit: ${money(summary.equity_ltcg_exemption_limit)}</div>
+      <div class="metric">FY: ${escapeHtml(String(summary.fy_label || "-"))}</div>
+      <div class="metric">Realized LTCG This FY: ${money(summary.realized_ltcg_net_gain)}</div>
+      <div class="metric ${Number(summary.remaining_ltcg_exemption || 0) > 0 ? "pos" : "neg"}">Remaining LTCG Exemption: ${money(summary.remaining_ltcg_exemption)}</div>
+      <div class="metric">Tax Bracket Ref: ${pct(summary.investor_tax_bracket_pct)}</div>
+      <div class="metric">Broker Cost Model: ${escapeHtml(zerodhaCostModel)}</div>
+      <div class="metric">Created: ${escapeHtml(String(summary.created_at || "-"))}</div>
+      <div class="metric">Last Recalibrated: ${escapeHtml(String(summary.last_recalibrated_at || "-"))}</div>
+    `;
+  }
+  if ($("dailyTargetPerformance")) {
+    $("dailyTargetPerformance").innerHTML = `
+      <div class="metric">Start Capital: ${money(perf.starting_capital)}</div>
+      <div class="metric">Realized Compounded Capital: ${money(perf.realized_compounded_capital)}</div>
+      <div class="metric ${clsBySign(perf.realized_profit_value)}">Realized Profit: ${money(perf.realized_profit_value)}</div>
+      <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Profit %: ${pct(perf.realized_profit_pct)}</div>
+      <div class="metric">Current Compounded Capital: ${money(perf.current_compounded_capital)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L: ${money(perf.compounded_return_value)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return %: ${pct(perf.compounded_return_pct)}</div>
+      <div class="metric">Executed Rotations: ${Number(perf.executed_rotation_count || 0)}</div>
+      <div class="metric">Open Tracked Positions: ${Number(perf.open_position_count || 0)}</div>
+      <div class="metric pos">Matched Trades: ${Number(perf.matched_rotation_count || 0)}</div>
+      <div class="metric ${Number(perf.unmatched_rotation_count || 0) > 0 ? "neg" : ""}">Unmatched Trades: ${Number(perf.unmatched_rotation_count || 0)}</div>
+      <div class="metric">Cumulative Sell Value: ${money(perf.cumulative_sell_value)}</div>
+      <div class="metric">Cumulative Buy Value: ${money(perf.cumulative_buy_value)}</div>
+      <div class="metric">Open Trade Cost Basis: ${money(perf.live_mtm_basis_value)}</div>
+      <div class="metric ${clsBySign(perf.live_mtm_pnl)}">Net Live P/L: ${money(perf.live_mtm_pnl)}</div>
+      <div class="metric ${clsBySign(perf.live_mtm_return_pct)}">Net Live Return %: ${pct(perf.live_mtm_return_pct)}</div>
+      <div class="metric">Latest Symbol: ${escapeHtml(String(perf.latest_symbol || "-"))}</div>
+      <div class="metric">Latest Trade Date: ${escapeHtml(String(perf.latest_trade_date || "-"))}</div>
+      <div class="metric">Next Day Seed Capital: ${money(summary.suggested_next_seed_capital || perf.suggested_next_seed_capital)}</div>
+    `;
+  }
+  const body = $("dailyTargetTable")?.querySelector("tbody");
+  if (body) {
+    body.innerHTML = activePairs.length
+      ? activePairs
+          .map(
+            (r) => {
+              const pairId = Number(r.pair_id || 0);
+              const draft = state.dailyTargetDrafts[pairId] || {};
+              const stateValue = draft.state || r.state || "pending";
+              const sellPriceValue =
+                draft.executed_sell_price !== undefined
+                  ? draft.executed_sell_price
+                  : r.executed_sell_price
+                    ? Number(r.executed_sell_price).toFixed(2)
+                    : "";
+              const sellDateValue =
+                draft.executed_sell_at !== undefined ? draft.executed_sell_at : r.executed_sell_at ? String(r.executed_sell_at).slice(0, 10) : "";
+              const buyPriceValue =
+                draft.executed_buy_price !== undefined
+                  ? draft.executed_buy_price
+                  : r.executed_buy_price
+                    ? Number(r.executed_buy_price).toFixed(2)
+                    : "";
+              const buyDateValue =
+                draft.executed_buy_at !== undefined ? draft.executed_buy_at : r.executed_buy_at ? String(r.executed_buy_at).slice(0, 10) : "";
+              const noteValue = draft.note !== undefined ? draft.note : String(r.completion_note || "");
+              return `
+              <tr>
+                <td>${Number(r.priority_rank || 0)}</td>
+                <td>${escapeHtml(String(r.state || "-"))}</td>
+                <td>${escapeHtml(String(r.sell_symbol || ""))}</td>
+                <td>${money(r.sell_qty)}</td>
+                <td>${money(r.current_sell_ref_price || r.sell_ref_price)}</td>
+                <td>${money(r.sell_trade_value)}</td>
+                <td>${escapeHtml(String(r.buy_symbol || ""))}</td>
+                <td>${money(r.buy_qty)}</td>
+                <td>${money(r.current_buy_ref_price || r.buy_ref_price)}</td>
+                <td>${money(r.buy_trade_value)}</td>
+                <td>${money(r.buy_target_exit_price)}</td>
+                <td class="${clsBySign(r.expected_profit_value)}">${money(r.expected_profit_value)}</td>
+                <td>${Number(r.rotation_score || 0).toFixed(2)}</td>
+                <td class="${clsBySign(r.target_progress_pct)}">${pct(r.target_progress_pct)}</td>
+                <td class="${dailyTargetReconClass(r)}">${escapeHtml(dailyTargetReconLabel(r))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.sell_reason || ""))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.buy_reason || ""))}</td>
+                <td>
+                  <div class="daily-target-exec-cell">
+                    <select class="daily-target-state-select" data-pair-id="${pairId}">
+                      ${dailyTargetStateOptions(stateValue)}
+                    </select>
+                    <input class="daily-target-sell-price" type="number" min="0.01" step="0.01" placeholder="sell px" value="${escapeHtml(String(sellPriceValue || ""))}">
+                    <input class="daily-target-sell-date" type="date" value="${escapeHtml(String(sellDateValue || ""))}">
+                    <input class="daily-target-buy-price" type="number" min="0.01" step="0.01" placeholder="buy px" value="${escapeHtml(String(buyPriceValue || ""))}">
+                    <input class="daily-target-buy-date" type="date" value="${escapeHtml(String(buyDateValue || ""))}">
+                    <input class="daily-target-note" type="text" maxlength="180" placeholder="note" value="${escapeHtml(String(noteValue || ""))}">
+                    <button class="btn secondary daily-target-save-btn" data-pair-id="${pairId}">Update</button>
+                  </div>
+                </td>
+              </tr>`;
+            }
+          )
+          .join("")
+      : '<tr><td colspan="18">No active daily target rotation ideas.</td></tr>';
+  }
+  const completedBody = $("dailyTargetCompletedTable")?.querySelector("tbody");
+  if (completedBody) {
+    completedBody.innerHTML = completedPairs.length
+      ? completedPairs
+          .map(
+            (r) => `
+              <tr>
+                <td>${Number(r.priority_rank || 0)}</td>
+                <td>${escapeHtml(String(r.state || "-"))}</td>
+                <td>${escapeHtml(String(r.sell_symbol || ""))} x ${money(r.sell_qty)}</td>
+                <td>${escapeHtml(String(r.buy_symbol || ""))} x ${money(r.buy_qty)}</td>
+                <td>${r.executed_sell_price ? `${money(r.executed_sell_price)} / ${money(r.executed_sell_value || 0)}` : "-"}</td>
+                <td>${r.executed_buy_price ? `${money(r.executed_buy_price)} / ${money(r.executed_buy_value || 0)}` : "-"}</td>
+                <td class="${dailyTargetReconClass(r)}">${escapeHtml(dailyTargetReconLabel(r))}</td>
+                <td>${escapeHtml(String(r.executed_buy_at || r.executed_sell_at || r.updated_at || "-"))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.completion_note || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="9">No completed rotations in the current cycle.</td></tr>';
+  }
+  const snapBody = $("dailyTargetSnapshotsTable")?.querySelector("tbody");
+  if (snapBody) {
+    snapBody.innerHTML = snapshots.length
+      ? snapshots
+          .map(
+            (r) => `
+              <tr>
+                <td>${escapeHtml(String(r.captured_at || "-"))}</td>
+                <td>${Number(r.priority_rank || 0)}</td>
+                <td>${escapeHtml(`${String(r.sell_symbol || "")} -> ${String(r.buy_symbol || "")}`)}</td>
+                <td>${money(r.sell_ref_price)}</td>
+                <td>${money(r.buy_ref_price)}</td>
+                <td>${money(r.buy_target_exit_price)}</td>
+                <td class="${clsBySign(r.expected_profit_value)}">${money(r.expected_profit_value)}</td>
+                <td>${Number(r.rotation_score || 0).toFixed(2)}</td>
+                <td class="reason-cell">${escapeHtml(String(r.snapshot_note || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="9">No recalibration log yet.</td></tr>';
+  }
+  bindDailyTargetTableActions();
+}
+
+async function loadDailyTargetHistory(options = {}) {
+  const throwOnError = !!options.throwOnError;
+  const params = new URLSearchParams();
+  params.set("limit", "250");
+  const from = String($("dailyTargetHistoryFrom")?.value || "").trim();
+  const to = String($("dailyTargetHistoryTo")?.value || "").trim();
+  const stateFilter = String($("dailyTargetHistoryState")?.value || "all").trim().toLowerCase();
+  if (from) params.set("date_from", from);
+  if (to) params.set("date_to", to);
+  if (stateFilter && stateFilter !== "all") params.set("state", stateFilter);
+  try {
+    const res = await api(`/api/v1/daily-target/history?${params.toString()}`);
+    renderDailyTargetHistory(res || {});
+  } catch (e) {
+    const body = $("dailyTargetHistoryTable")?.querySelector("tbody");
+    const meta = normalizeUiError(e, "DAILY_TARGET_HISTORY_FAILED");
+    if (body) body.innerHTML = `<tr><td colspan="15">Failed to load history: ${escapeHtml(meta.reason)}</td></tr>`;
+    if ($("dailyTargetHistorySummary")) $("dailyTargetHistorySummary").innerHTML = `<div class="metric neg">History unavailable: ${escapeHtml(meta.reason)}</div>`;
+    if (throwOnError) throw e;
+  }
+}
+
+async function loadDailyTargetPlan(options = {}) {
+  const throwOnError = !!options.throwOnError;
+  const recalibrate = options.recalibrate !== false;
+  const seedCapital = Math.max(1000, Number($("dailyTargetSeedCapital")?.value || 10000));
+  const targetProfitPct = Math.max(0.1, Number($("dailyTargetProfitPct")?.value || 1));
+  const topN = Math.max(1, Math.min(10, Number($("dailyTargetTopN")?.value || 5)));
+  if ($("dailyTargetStatusText")) {
+    $("dailyTargetStatusText").textContent = recalibrate
+      ? `Daily target recalibrating: ${new Date().toLocaleString()}`
+      : `Daily target loading: ${new Date().toLocaleString()}`;
+  }
+  const params = new URLSearchParams();
+  params.set("seed_capital", String(Number(seedCapital.toFixed(2))));
+  params.set("target_profit_pct", String(Number(targetProfitPct.toFixed(2))));
+  params.set("top_n", String(topN));
+  params.set("recalibrate", recalibrate ? "1" : "0");
+  try {
+    const res = await api(`/api/v1/daily-target/plan?${params.toString()}`);
+    renderDailyTargetPlan(res || {});
+    await loadDailyTargetHistory();
+    if ($("dailyTargetStatusText")) {
+      $("dailyTargetStatusText").textContent = recalibrate
+        ? `Daily target recalibrated: ${new Date().toLocaleString()}`
+        : `Daily target loaded: ${new Date().toLocaleString()}`;
+    }
+  } catch (e) {
+    const meta = normalizeUiError(e, "DAILY_TARGET_PLAN_FAILED");
+    if ($("dailyTargetStatusText")) $("dailyTargetStatusText").textContent = `Daily target error: ${meta.reason}`;
+    if ($("dailyTargetSummary")) $("dailyTargetSummary").innerHTML = `<div class="metric neg">Daily target unavailable: ${escapeHtml(meta.reason)}</div>`;
+    const body = $("dailyTargetTable")?.querySelector("tbody");
+    const completedBody = $("dailyTargetCompletedTable")?.querySelector("tbody");
+    const snapBody = $("dailyTargetSnapshotsTable")?.querySelector("tbody");
+    if (body) body.innerHTML = '<tr><td colspan="17">Failed to load daily target ideas.</td></tr>';
+    if (completedBody) completedBody.innerHTML = '<tr><td colspan="9">Failed to load completed current-cycle items.</td></tr>';
+    if (snapBody) snapBody.innerHTML = '<tr><td colspan="9">Failed to load recalibration log.</td></tr>';
+    if (throwOnError) throw e;
+  }
+}
+
+async function resetDailyTargetPlan() {
+  if ($("dailyTargetStatusText")) {
+    $("dailyTargetStatusText").textContent = `Daily target resetting: ${new Date().toLocaleString()}`;
+  }
+  await api("/api/v1/daily-target/reset", { method: "POST", body: JSON.stringify({}) });
+  await loadDailyTargetPlan({ recalibrate: true });
+}
+
 function pendingPeakSplitSignature(items) {
   return (items || [])
     .map((x) => Number(x.id || 0))
@@ -3309,6 +3712,276 @@ function renderStrategyInsights(item) {
   });
   $("strategyRecoTable").querySelector("tbody").innerHTML = rows.join("");
   renderStrategyProjection(item.projections || { scenarios: [] }, false);
+}
+
+function strategyAuditStatusClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "critical") return "neg";
+  if (s === "warn") return "";
+  return "pos";
+}
+
+function strategyAuditSeverityClass(severity) {
+  const s = String(severity || "").toLowerCase();
+  if (s === "critical" || s === "warn") return "neg";
+  return "";
+}
+
+function renderStrategyAudit(payload) {
+  const p = payload || {};
+  state.strategyAuditRaw = p;
+  const latest = p.latest || null;
+  const items = Array.isArray(p.items) ? p.items : [];
+  const summaryEl = $("strategyAuditSummary");
+  if (summaryEl) {
+    if (!latest) {
+      summaryEl.innerHTML = "<div class='metric'>No audit runs yet.</div>";
+    } else {
+      const stats = latest.stats || {};
+      summaryEl.innerHTML = `
+        <div class="metric">Mode: ${escapeHtml(String(latest.audit_mode || "heuristic"))}</div>
+        <div class="metric">Run At: ${escapeHtml(String(latest.created_at || "-"))}</div>
+        <div class="metric">Strategy Date: ${escapeHtml(String(latest.strategy_run_date || "-"))}</div>
+        <div class="metric ${strategyAuditStatusClass(latest.overall_status)}">Status: ${escapeHtml(String(latest.overall_status || "ok").toUpperCase())}</div>
+        <div class="metric ${clsBySign(Number(latest.overall_score || 0) - 60)}">Audit Score: ${Number(latest.overall_score || 0).toFixed(2)}</div>
+        <div class="metric">Recommendations: ${Number(stats.recommendation_count || 0)}</div>
+        <div class="metric">ADD/WATCH: ${Number(stats.add_count || 0)}</div>
+        <div class="metric">TRIM: ${Number(stats.trim_count || 0)}</div>
+        <div class="metric">REVIEW: ${Number(stats.review_count || 0)}</div>
+        <div class="metric">Low Confidence: ${Number(stats.low_confidence_count || 0)}</div>
+        <div class="metric">Backtest Hit Rate: ${pct((Number(stats.backtest_hit_rate || 0)) * 100)}</div>
+        <div class="metric">Backtest Samples: ${Number(stats.backtest_sample_count || 0)}</div>
+        <div class="metric">Target Weight Sum: ${Number(stats.target_weight_sum || 0).toFixed(2)}</div>
+        <div class="metric">Macro Conf: ${pct((Number(stats.macro_confidence || 0)) * 100)}</div>
+        <div class="metric">Intel Conf: ${pct((Number(stats.intel_confidence || 0)) * 100)}</div>
+        <div class="metric" style="grid-column: 1 / -1;">Summary: ${escapeHtml(String(latest.summary || "-"))}</div>
+        <div class="metric" style="grid-column: 1 / -1;">Recommendation: ${escapeHtml(String(latest.recommendation || "-"))}</div>
+      `;
+    }
+  }
+  const findingsBody = $("strategyAuditFindingsTable")?.querySelector("tbody");
+  if (findingsBody) {
+    const findings = Array.isArray(latest?.findings) ? latest.findings : [];
+    findingsBody.innerHTML = findings.length
+      ? findings
+          .map(
+            (f) => `
+              <tr>
+                <td class="${strategyAuditSeverityClass(f.severity)}">${escapeHtml(String(f.severity || "-").toUpperCase())}</td>
+                <td>${escapeHtml(String(f.code || ""))}</td>
+                <td>${escapeHtml(String(f.title || ""))}</td>
+                <td>${escapeHtml(String(f.symbol || "-"))}</td>
+                <td>${f.metric_value === null || typeof f.metric_value === "undefined" ? "-" : money(f.metric_value)}</td>
+                <td>${escapeHtml(String(f.expected_range || "-"))}</td>
+                <td class="reason-cell">${escapeHtml(String(f.detail || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="7">No audit findings yet.</td></tr>';
+  }
+  const historyBody = $("strategyAuditHistoryTable")?.querySelector("tbody");
+  if (historyBody) {
+    historyBody.innerHTML = items.length
+      ? items
+          .map(
+            (r) => `
+              <tr>
+                <td>${escapeHtml(String(r.created_at || "-"))}</td>
+                <td>${escapeHtml(String(r.strategy_run_date || "-"))}</td>
+                <td class="${strategyAuditStatusClass(r.overall_status)}">${escapeHtml(String(r.overall_status || "").toUpperCase())}</td>
+                <td>${Number(r.overall_score || 0).toFixed(2)}</td>
+                <td>${Number(r.critical_count || 0)}</td>
+                <td>${Number(r.warn_count || 0)}</td>
+                <td>${Number(r.info_count || 0)}</td>
+                <td class="reason-cell">${escapeHtml(String(r.summary || ""))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.recommendation || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="9">No strategy audit history yet.</td></tr>';
+  }
+}
+
+async function loadStrategyAudit(options = {}) {
+  const throwOnError = !!options.throwOnError;
+  try {
+    const res = await api("/api/v1/strategy/audits?limit=40");
+    renderStrategyAudit(res || {});
+    if ($("strategyAuditStatusText")) {
+      const latest = res?.latest || null;
+      $("strategyAuditStatusText").textContent = latest
+        ? `Strategy audit: ${String(latest.overall_status || "ok").toUpperCase()} | ${new Date().toLocaleString()}`
+        : `Strategy audit: no runs yet`;
+    }
+  } catch (e) {
+    const meta = normalizeUiError(e, "STRATEGY_AUDIT_LOAD_FAILED");
+    if ($("strategyAuditStatusText")) $("strategyAuditStatusText").textContent = `Strategy audit error: ${meta.reason}`;
+    const findingsBody = $("strategyAuditFindingsTable")?.querySelector("tbody");
+    const historyBody = $("strategyAuditHistoryTable")?.querySelector("tbody");
+    if ($("strategyAuditSummary")) $("strategyAuditSummary").innerHTML = `<div class="metric neg">Strategy audit unavailable: ${escapeHtml(meta.reason)}</div>`;
+    if (findingsBody) findingsBody.innerHTML = '<tr><td colspan="7">Failed to load audit findings.</td></tr>';
+    if (historyBody) historyBody.innerHTML = '<tr><td colspan="9">Failed to load audit history.</td></tr>';
+    if (throwOnError) throw e;
+  }
+}
+
+async function runStrategyAudit() {
+  if ($("strategyAuditStatusText")) {
+    $("strategyAuditStatusText").textContent = `Strategy audit running: ${new Date().toLocaleString()}`;
+  }
+  const refreshStrategy = !!$("strategyAuditRefreshFirst")?.checked;
+  const res = await api("/api/v1/strategy/audits/run", {
+    method: "POST",
+    body: JSON.stringify({ refresh_strategy: refreshStrategy }),
+  });
+  await loadStrategyAudit();
+  if ($("strategyAuditStatusText")) {
+    $("strategyAuditStatusText").textContent =
+      `Strategy audit ${String(res?.overall_status || "ok").toUpperCase()}: ${new Date().toLocaleString()}`;
+  }
+}
+
+function attentionSeverityClass(severity) {
+  const s = String(severity || "").toLowerCase();
+  if (s === "critical") return "neg";
+  if (s === "warning") return "warn";
+  return "";
+}
+
+function smallRatePct(rateDecimal) {
+  return `${(Number(rateDecimal || 0) * 100).toFixed(3)}%`;
+}
+
+function renderAttentionConsole(payload) {
+  const p = payload || {};
+  const summary = p.summary || {};
+  const tax = p.tax_profile || {};
+  const openAlerts = Array.isArray(p.open_alerts) ? p.open_alerts : [];
+  const resolvedAlerts = Array.isArray(p.resolved_alerts) ? p.resolved_alerts : [];
+  const taxRuns = Array.isArray(p.tax_sync_runs) ? p.tax_sync_runs : [];
+  state.attentionRaw = p;
+  if ($("attentionSummary")) {
+    $("attentionSummary").innerHTML = `
+      <div class="metric ${Number(summary.open_count || 0) > 0 ? "neg" : "pos"}">Open Alerts: ${Number(summary.open_count || 0)}</div>
+      <div class="metric">Critical Open: ${Number(summary.critical_open || 0)}</div>
+      <div class="metric">Warning Open: ${Number(summary.warning_open || 0)}</div>
+      <div class="metric">Info Open: ${Number(summary.info_open || 0)}</div>
+      <div class="metric">Resolved Shown: ${Number(summary.resolved_count || 0)}</div>
+      <div class="metric">Latest Tax Sync: ${escapeHtml(String(summary.latest_tax_sync_at || "-"))}</div>
+      <div class="metric">Latest Tax Sync Status: ${escapeHtml(String(summary.latest_tax_sync_status || "-"))}</div>
+    `;
+  }
+  if ($("attentionTaxProfile")) {
+    $("attentionTaxProfile").innerHTML = `
+      <div class="metric">FY: ${escapeHtml(String(tax.fy_label || "-"))}</div>
+      <div class="metric">FY Range: ${escapeHtml(String(tax.fy_start_date || "-"))} to ${escapeHtml(String(tax.fy_end_date || "-"))}</div>
+      <div class="metric">STCG Rate: ${pct(tax.stcg_rate_pct)}</div>
+      <div class="metric">LTCG Rate: ${pct(tax.ltcg_rate_pct)}</div>
+      <div class="metric">LTCG Exemption Limit: ${money(tax.ltcg_exemption_limit)}</div>
+      <div class="metric ${clsBySign(-Number(tax.realized_ltcg_net_gain || 0))}">Realized LTCG This FY: ${money(tax.realized_ltcg_net_gain)}</div>
+      <div class="metric ${Number(tax.remaining_ltcg_exemption || 0) > 0 ? "pos" : "neg"}">Remaining LTCG Exemption: ${money(tax.remaining_ltcg_exemption)}</div>
+      <div class="metric">Stamp Buy Rate: ${smallRatePct(tax.stamp_buy_rate)}</div>
+      <div class="metric">STT Delivery Rate: ${smallRatePct(tax.stt_delivery_rate)}</div>
+      <div class="metric">GST Rate: ${pct(Number(tax.gst_rate || 0) * 100)}</div>
+      <div class="metric">DP Charge Sell: ${money(tax.dp_charge_sell_incl_gst)}</div>
+    `;
+  }
+  const openBody = $("attentionOpenTable")?.querySelector("tbody");
+  if (openBody) {
+    openBody.innerHTML = openAlerts.length
+      ? openAlerts
+          .map(
+            (r, idx) => `
+              <tr>
+                <td>${idx + 1}</td>
+                <td class="${attentionSeverityClass(r.severity_label)}">${escapeHtml(String(r.severity_label || "-").toUpperCase())}</td>
+                <td>${escapeHtml(String(r.category || "-"))}</td>
+                <td>${escapeHtml(String(r.title || "-"))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.detail || ""))}</td>
+                <td>${escapeHtml(String(r.source_ref || "-"))}</td>
+                <td>${escapeHtml(String(r.detected_at || "-"))}</td>
+                <td>${escapeHtml(String(r.last_seen_at || "-"))}</td>
+                <td>${Number(r.occurrence_count || 0)}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="9">No open attention items.</td></tr>';
+  }
+  const taxRunsBody = $("attentionTaxRunsTable")?.querySelector("tbody");
+  if (taxRunsBody) {
+    taxRunsBody.innerHTML = taxRuns.length
+      ? taxRuns
+          .map(
+            (r) => `
+              <tr>
+                <td>${escapeHtml(String(r.created_at || "-"))}</td>
+                <td class="${String(r.status || "").toLowerCase() === "error" ? "neg" : "pos"}">${escapeHtml(String(r.status || "-").toUpperCase())}</td>
+                <td>${r.stcg_rate_pct != null ? pct(r.stcg_rate_pct) : "-"}</td>
+                <td>${r.ltcg_rate_pct != null ? pct(r.ltcg_rate_pct) : "-"}</td>
+                <td>${r.ltcg_exemption_limit != null ? money(r.ltcg_exemption_limit) : "-"}</td>
+                <td>${r.stt_delivery_rate != null ? smallRatePct(r.stt_delivery_rate) : "-"}</td>
+                <td>${r.stamp_buy_rate != null ? smallRatePct(r.stamp_buy_rate) : "-"}</td>
+                <td>${r.gst_rate != null ? pct(Number(r.gst_rate || 0) * 100) : "-"}</td>
+                <td>${r.dp_charge_sell != null ? money(r.dp_charge_sell) : "-"}</td>
+                <td class="reason-cell">${escapeHtml(String(r.error || r.detail || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="10">No tax monitor runs yet.</td></tr>';
+  }
+  const resolvedBody = $("attentionResolvedTable")?.querySelector("tbody");
+  if (resolvedBody) {
+    resolvedBody.innerHTML = resolvedAlerts.length
+      ? resolvedAlerts
+          .map(
+            (r) => `
+              <tr>
+                <td class="${attentionSeverityClass(r.severity_label)}">${escapeHtml(String(r.severity_label || "-").toUpperCase())}</td>
+                <td>${escapeHtml(String(r.category || "-"))}</td>
+                <td>${escapeHtml(String(r.title || "-"))}</td>
+                <td>${escapeHtml(String(r.resolved_at || "-"))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.detail || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="5">No recently resolved items.</td></tr>';
+  }
+}
+
+async function loadAttentionConsole(options = {}) {
+  const throwOnError = !!options.throwOnError;
+  try {
+    const res = await api("/api/v1/attention");
+    renderAttentionConsole(res || {});
+    if ($("attentionStatusText")) {
+      const openCount = Number((res?.summary || {}).open_count || 0);
+      $("attentionStatusText").textContent = openCount > 0
+        ? `Attention: ${openCount} open item(s)`
+        : `Attention: clear`;
+    }
+  } catch (e) {
+    const meta = normalizeUiError(e, "ATTENTION_LOAD_FAILED");
+    if ($("attentionStatusText")) $("attentionStatusText").textContent = `Attention error: ${meta.reason}`;
+    if ($("attentionSummary")) $("attentionSummary").innerHTML = `<div class="metric neg">Attention console unavailable: ${escapeHtml(meta.reason)}</div>`;
+    const openBody = $("attentionOpenTable")?.querySelector("tbody");
+    const runsBody = $("attentionTaxRunsTable")?.querySelector("tbody");
+    const resolvedBody = $("attentionResolvedTable")?.querySelector("tbody");
+    if (openBody) openBody.innerHTML = '<tr><td colspan="9">Failed to load open alerts.</td></tr>';
+    if (runsBody) runsBody.innerHTML = '<tr><td colspan="10">Failed to load tax sync runs.</td></tr>';
+    if (resolvedBody) resolvedBody.innerHTML = '<tr><td colspan="5">Failed to load resolved alerts.</td></tr>';
+    if (throwOnError) throw e;
+  }
+}
+
+async function runAttentionTaxMonitor() {
+  if ($("attentionStatusText")) $("attentionStatusText").textContent = `Attention: tax monitor running`;
+  await api("/api/v1/agents/tax_monitor/control", {
+    method: "PUT",
+    body: JSON.stringify({ run_now: true }),
+  });
+  await loadAttentionConsole();
+  await loadAgentStatus();
+  if ($("attentionStatusText")) $("attentionStatusText").textContent = `Attention: tax monitor refreshed`;
 }
 
 function renderIntelSummaryBlock(summary) {
@@ -4179,6 +4852,9 @@ async function loadDashboard() {
   if (state.currentTab === "harvest") {
     await loadHarvestPlan();
   }
+  if (state.currentTab === "dailytarget") {
+    await loadDailyTargetPlan({ recalibrate: false });
+  }
   if (state.currentTab === "losslots") {
     await loadLossLots();
   }
@@ -4428,6 +5104,12 @@ function bindEvents() {
         await loadStrategyInsights(false);
         await loadIntelSummary();
       }
+      if (tab === "strategyaudit") {
+        await loadStrategyAudit();
+      }
+      if (tab === "attention") {
+        await loadAttentionConsole();
+      }
       if (tab === "peak") {
         await loadPeakDiff();
       }
@@ -4436,6 +5118,10 @@ function bindEvents() {
       }
       if (tab === "harvest") {
         await loadHarvestPlan();
+      }
+      if (tab === "dailytarget") {
+        await loadDailyTargetPlan({ recalibrate: false });
+        await loadDailyTargetHistory();
       }
       if (tab === "losslots") {
         await loadLossLots();
@@ -4474,6 +5160,10 @@ function bindEvents() {
   registerButton("saveParamsBtn", saveParams, { actionName: "Save Strategy Parameters", errorCode: "STRATEGY_PARAMS_SAVE_FAILED" });
   registerButton("activateSetBtn", activateSet, { actionName: "Activate Strategy Set", errorCode: "STRATEGY_SET_ACTIVATE_FAILED" });
   registerButton("refreshStrategyBtn", refreshStrategyNow, { actionName: "Refresh Strategy", errorCode: "STRATEGY_REFRESH_FAILED" });
+  registerButton("strategyAuditRunBtn", runStrategyAudit, { actionName: "Run Strategy Audit", errorCode: "STRATEGY_AUDIT_RUN_FAILED" });
+  registerButton("strategyAuditRefreshBtn", () => loadStrategyAudit({ throwOnError: true }), { actionName: "Refresh Strategy Audit", errorCode: "STRATEGY_AUDIT_LOAD_FAILED" });
+  registerButton("attentionRefreshBtn", () => loadAttentionConsole({ throwOnError: true }), { actionName: "Refresh Attention Console", errorCode: "ATTENTION_LOAD_FAILED" });
+  registerButton("attentionRunTaxMonitorBtn", runAttentionTaxMonitor, { actionName: "Run Tax Monitor", errorCode: "TAX_MONITOR_RUN_FAILED" });
   registerButton("intelRefreshBtn", loadIntelSummary, { actionName: "Refresh Intelligence", errorCode: "INTEL_REFRESH_FAILED" });
   registerButton("intelAnalyzeBtn", analyzeIntelDocument, { actionName: "Analyze Intelligence Document", errorCode: "INTEL_DOC_ANALYZE_FAILED" });
   registerButton("intelFinancialAddBtn", addIntelFinancialRow, { actionName: "Add Financial QoQ", errorCode: "INTEL_FINANCIAL_ADD_FAILED" });
@@ -4489,6 +5179,8 @@ function bindEvents() {
   registerButton("rebalanceResetLotBtn", resetRebalanceLot, { actionName: "Reset Rebalance Lot", errorCode: "REBALANCE_RESET_FAILED" });
   registerButton("rebalanceSaveGuardsBtn", saveRebalanceGuards, { actionName: "Save Min/Max Limits", errorCode: "REBALANCE_GUARD_SAVE_FAILED" });
   registerButton("rebalanceHistoryRefreshBtn", () => loadRebalanceClosedHistory({ throwOnError: true }), { actionName: "Refresh Closed History", errorCode: "REBALANCE_CLOSED_HISTORY_FAILED" });
+  registerButton("dailyTargetRefreshBtn", () => loadDailyTargetPlan({ throwOnError: true, recalibrate: true }), { actionName: "Recalibrate Daily Target", errorCode: "DAILY_TARGET_PLAN_FAILED" });
+  registerButton("dailyTargetResetBtn", resetDailyTargetPlan, { actionName: "Start New Daily Target Cycle", errorCode: "DAILY_TARGET_RESET_FAILED" });
   registerButton("harvestRefreshBtn", () => loadHarvestPlan({ throwOnError: true }), { actionName: "Refresh Harvest Plan", errorCode: "HARVEST_PLAN_FAILED" });
   registerButton("harvestRunAnalysisBtn", () => loadHarvestPlan({ throwOnError: true, runLlm: true }), { actionName: "Run Harvest Dynamic Analysis", errorCode: "HARVEST_ANALYSIS_FAILED" });
   registerButton("lossLotsRefreshBtn", () => loadLossLots({ throwOnError: true }), { actionName: "Refresh Loss Lots", errorCode: "LOSS_LOTS_FAILED" });
@@ -4529,6 +5221,13 @@ function bindEvents() {
   $("rebalanceSide")?.addEventListener("change", () => loadRebalanceSuggestions().catch(() => {}));
   $("rebalancePercent")?.addEventListener("change", () => loadRebalanceSuggestions().catch(() => {}));
   $("rebalanceHistoryShowCompleted")?.addEventListener("change", () => loadRebalanceClosedHistory().catch(() => {}));
+  $("dailyTargetSeedCapital")?.addEventListener("change", () => loadDailyTargetPlan().catch(() => {}));
+  $("dailyTargetProfitPct")?.addEventListener("change", () => loadDailyTargetPlan().catch(() => {}));
+  $("dailyTargetTopN")?.addEventListener("change", () => loadDailyTargetPlan().catch(() => {}));
+  ["dailyTargetHistoryFrom", "dailyTargetHistoryTo", "dailyTargetHistoryState"].forEach((id) => {
+    $(id)?.addEventListener("input", () => loadDailyTargetHistory().catch(() => {}));
+    $(id)?.addEventListener("change", () => loadDailyTargetHistory().catch(() => {}));
+  });
   $("harvestTargetLoss")?.addEventListener("change", () => loadHarvestPlan().catch(() => {}));
 
   ["holdingsFilterSymbol", "holdingsFilterSignal", "holdingsFilterMinRet", "holdingsFilterMaxRet"].forEach((id) => {

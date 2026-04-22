@@ -31,6 +31,9 @@
     <button class="tab-btn" data-tab="trades">Trade History</button>
     <button class="tab-btn" data-tab="peak">Peak Diff</button>
     <button class="tab-btn" data-tab="strategy">Strategy & Splits</button>
+    <button class="tab-btn" data-tab="strategyaudit">Strategy Audit</button>
+    <button class="tab-btn" data-tab="attention">Attention Console</button>
+    <button class="tab-btn" data-tab="dailytarget">Daily Target</button>
     <button class="tab-btn" data-tab="harvest">Harvest Planner</button>
     <button class="tab-btn" data-tab="losslots">Loss Lots</button>
     <button class="tab-btn" data-tab="cashflow">Cashflow</button>
@@ -612,6 +615,121 @@
       </div>
     </section>
 
+    <section class="card tab-section hidden" data-tab="strategyaudit">
+      <h2>Strategy Audit</h2>
+      <p>Low-cost audit engine for the strategy layer. This uses stored strategy recommendations, confidence, sizing mix, and latest backtest data. No live LLM API is required.</p>
+      <div class="row">
+        <button id="strategyAuditRunBtn" class="btn secondary">Run Strategy Audit</button>
+        <label for="strategyAuditRefreshFirst">Refresh Strategy First</label>
+        <input id="strategyAuditRefreshFirst" type="checkbox">
+        <button id="strategyAuditRefreshBtn" class="btn">Refresh Audit View</button>
+        <span id="strategyAuditStatusText" class="metric">Strategy audit: -</span>
+      </div>
+      <div id="strategyAuditSummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Latest Audit Findings</div>
+        <table id="strategyAuditFindingsTable">
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Code</th>
+              <th>Title</th>
+              <th>Symbol</th>
+              <th>Metric</th>
+              <th>Expected</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Audit Run History</div>
+        <table id="strategyAuditHistoryTable">
+          <thead>
+            <tr>
+              <th>Run At</th>
+              <th>Strategy Date</th>
+              <th>Status</th>
+              <th>Score</th>
+              <th>Critical</th>
+              <th>Warn</th>
+              <th>Info</th>
+              <th>Summary</th>
+              <th>Recommendation</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card tab-section hidden" data-tab="attention">
+      <h2>Attention Console</h2>
+      <p>Items here need a human look. Alerts are ranked by severity so source-sync failures and market-impacting issues stay on top.</p>
+      <div class="row">
+        <button id="attentionRefreshBtn" class="btn secondary">Refresh Attention</button>
+        <button id="attentionRunTaxMonitorBtn" class="btn">Run Tax Monitor Now</button>
+        <span id="attentionStatusText" class="metric">Attention: -</span>
+      </div>
+      <div id="attentionSummary" class="perf-summary"></div>
+      <div id="attentionTaxProfile" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Open Alerts</div>
+        <table id="attentionOpenTable">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Severity</th>
+              <th>Category</th>
+              <th>Title</th>
+              <th>Detail</th>
+              <th>Source</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th>Count</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Recent Tax Sync Runs</div>
+        <table id="attentionTaxRunsTable">
+          <thead>
+            <tr>
+              <th>Run At</th>
+              <th>Status</th>
+              <th>STCG %</th>
+              <th>LTCG %</th>
+              <th>LTCG Exemption</th>
+              <th>STT</th>
+              <th>Stamp</th>
+              <th>GST</th>
+              <th>DP</th>
+              <th>Detail / Error</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Recently Resolved</div>
+        <table id="attentionResolvedTable">
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Category</th>
+              <th>Title</th>
+              <th>Resolved At</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="card tab-section hidden" data-tab="harvest">
       <h2>Capital Gain Harvest Planner</h2>
       <p>Plan loss harvesting from current losers and pair it with profit-booking candidates that can absorb gains later. Suggestions are split by tax bucket so STCG and LTCG are planned separately, not just by current profit percentage.</p>
@@ -675,6 +793,134 @@
         <div class="table-title">Dynamic Analysis</div>
         <div id="harvestAnalysisMeta" class="metric-inline" style="padding: 8px 10px;">Mode: -</div>
         <pre id="harvestAnalysisText" class="analysis-block">No analysis yet.</pre>
+      </div>
+    </section>
+
+    <section class="card tab-section hidden" data-tab="dailytarget">
+      <h2>1% Daily Target Planner</h2>
+      <p>Rotates from weaker existing holdings into stronger existing holdings using the same capital base. The active cycle is recalibrated as market conditions shift, while old ideas are preserved in history instead of being overwritten.</p>
+      <div class="row">
+        <label for="dailyTargetSeedCapital">Seed Capital</label>
+        <input id="dailyTargetSeedCapital" type="number" min="1000" step="100" value="10000">
+        <label for="dailyTargetProfitPct">Target Profit %</label>
+        <input id="dailyTargetProfitPct" type="number" min="0.1" max="25" step="0.1" value="1">
+        <label for="dailyTargetTopN">Ideas</label>
+        <input id="dailyTargetTopN" type="number" min="1" max="10" step="1" value="5">
+        <button id="dailyTargetRefreshBtn" class="btn secondary">Recalibrate Plan</button>
+        <button id="dailyTargetResetBtn" class="btn">Start New Cycle</button>
+        <span id="dailyTargetStatusText" class="metric">Daily target: -</span>
+      </div>
+      <div id="dailyTargetSummary" class="perf-summary"></div>
+      <div id="dailyTargetPerformance" class="perf-summary"></div>
+      <div class="table-wrap">
+        <div class="table-title">Active Rotation Queue</div>
+        <table id="dailyTargetTable">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>State</th>
+              <th>Sell</th>
+              <th>Sell Qty</th>
+              <th>Sell @</th>
+              <th>Sell Value</th>
+              <th>Buy</th>
+              <th>Buy Qty</th>
+              <th>Buy @</th>
+              <th>Buy Value</th>
+              <th>Buy Target Exit</th>
+              <th>Target Profit</th>
+              <th>Score</th>
+              <th>Progress %</th>
+              <th>Trade Check</th>
+              <th>Sell Reason</th>
+              <th>Buy Reason</th>
+              <th>Execution</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Completed In Current Cycle</div>
+        <table id="dailyTargetCompletedTable">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>State</th>
+              <th>Sell</th>
+              <th>Buy</th>
+              <th>Executed Sell</th>
+              <th>Executed Buy</th>
+              <th>Trade Check</th>
+              <th>Done On</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Recalibration Log</div>
+        <table id="dailyTargetSnapshotsTable">
+          <thead>
+            <tr>
+              <th>Captured</th>
+              <th>Rank</th>
+              <th>Pair</th>
+              <th>Sell @</th>
+              <th>Buy @</th>
+              <th>Buy Target Exit</th>
+              <th>Target Profit</th>
+              <th>Score</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <label for="dailyTargetHistoryFrom">History From</label>
+        <input id="dailyTargetHistoryFrom" type="date">
+        <label for="dailyTargetHistoryTo">History To</label>
+        <input id="dailyTargetHistoryTo" type="date">
+        <label for="dailyTargetHistoryState">History State</label>
+        <select id="dailyTargetHistoryState">
+          <option value="all">All</option>
+          <option value="active">Current/Open</option>
+          <option value="closed">Completed/Closed</option>
+          <option value="pending">Pending</option>
+          <option value="sell_done">Sell Done</option>
+          <option value="buy_done">Buy Done</option>
+          <option value="executed">Done</option>
+          <option value="skipped">Skipped</option>
+          <option value="replaced">Replaced</option>
+        </select>
+      </div>
+      <div id="dailyTargetHistorySummary" class="perf-summary"></div>
+      <div class="table-wrap table-wrap-rows-5">
+        <div class="table-title">Tracked Rotation History</div>
+        <table id="dailyTargetHistoryTable">
+          <thead>
+            <tr>
+              <th>Updated</th>
+              <th>Plan</th>
+              <th>Rank</th>
+              <th>State</th>
+              <th>Sell</th>
+              <th>Buy</th>
+              <th>Seed Capital</th>
+              <th>Target %</th>
+              <th>Target Profit</th>
+              <th>Current Value</th>
+              <th>Live P/L</th>
+              <th>Trade Check</th>
+              <th>Executed Sell Value</th>
+              <th>Executed Buy Value</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 

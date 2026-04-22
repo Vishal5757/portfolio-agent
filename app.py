@@ -74,6 +74,8 @@ CHART_AGENT_INTERVAL_DEFAULT_SEC = 6 * 60 * 60
 CHART_AGENT_MIN_INTERVAL_SEC = 60 * 15
 SOFTWARE_PERF_AGENT_INTERVAL_DEFAULT_SEC = 15 * 60
 SOFTWARE_PERF_AGENT_MIN_INTERVAL_SEC = 60
+TAX_MONITOR_INTERVAL_DEFAULT_SEC = 24 * 60 * 60
+TAX_MONITOR_MIN_INTERVAL_SEC = 60 * 60
 LLM_DEFAULT_MODEL = "gpt-4.1-mini"
 LLM_DEFAULT_API_URL = "https://api.openai.com/v1/responses"
 RISK_AGENT_INTERVAL_DEFAULT_SEC = 6 * 60 * 60
@@ -98,6 +100,8 @@ BUILTIN_LIVE_QUOTE_SOURCES = (
     "cnbc_scrape",
 )
 DEFAULT_LIVE_QUOTE_SOURCES = ",".join(BUILTIN_LIVE_QUOTE_SOURCES)
+DEFAULT_TAX_MONITOR_TAX_URL = "https://zerodha.com/z-connect/business-updates/what-changes-for-investors-after-budget-2024"
+DEFAULT_TAX_MONITOR_CHARGES_URL = "https://zerodha.com/charges/"
 LIVE_QUOTE_MAX_DEVIATION_PCT_DEFAULT = 8.0
 LIVE_QUOTE_TOP_K_DEFAULT = 4
 LIVE_QUOTE_EXPLORE_RATIO_DEFAULT = 0.2
@@ -489,6 +493,10 @@ def parse_float(value, default=0.0) -> float:
     return default
 
 
+def money(value):
+    return f"₹{parse_float(value, 0.0):,.2f}"
+
+
 def clamp(value, low, high):
     return max(low, min(high, value))
 
@@ -813,6 +821,159 @@ def ensure_schema_migrations():
         conn.execute("UPDATE rebalance_lot_items SET buyback_completed = 0 WHERE buyback_completed IS NULL")
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS daily_target_plans (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              seed_capital REAL NOT NULL DEFAULT 10000,
+              target_profit_pct REAL NOT NULL DEFAULT 1,
+              target_profit_value REAL NOT NULL DEFAULT 0,
+              top_n INTEGER NOT NULL DEFAULT 5,
+              status TEXT NOT NULL CHECK (status IN ('active','completed','reset')) DEFAULT 'active',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              last_recalibrated_at TEXT,
+              closed_at TEXT,
+              notes TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_daily_target_plans_status_created ON daily_target_plans(status, created_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_target_plan_pairs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              plan_id INTEGER NOT NULL REFERENCES daily_target_plans(id) ON DELETE CASCADE,
+              priority_rank INTEGER NOT NULL DEFAULT 1,
+              state TEXT NOT NULL DEFAULT 'pending',
+              sell_symbol TEXT NOT NULL,
+              sell_qty REAL NOT NULL DEFAULT 0,
+              sell_ref_price REAL NOT NULL DEFAULT 0,
+              sell_trade_value REAL NOT NULL DEFAULT 0,
+              sell_target_price REAL NOT NULL DEFAULT 0,
+              sell_score REAL NOT NULL DEFAULT 0,
+              sell_reason TEXT,
+              buy_symbol TEXT NOT NULL,
+              buy_qty REAL NOT NULL DEFAULT 0,
+              buy_ref_price REAL NOT NULL DEFAULT 0,
+              buy_trade_value REAL NOT NULL DEFAULT 0,
+              buy_target_exit_price REAL NOT NULL DEFAULT 0,
+              buy_score REAL NOT NULL DEFAULT 0,
+              buy_reason TEXT,
+              expected_profit_value REAL NOT NULL DEFAULT 0,
+              rotation_score REAL NOT NULL DEFAULT 0,
+              current_sell_ref_price REAL NOT NULL DEFAULT 0,
+              current_buy_ref_price REAL NOT NULL DEFAULT 0,
+              target_progress_pct REAL NOT NULL DEFAULT 0,
+              matched_sell_trade_id INTEGER,
+              matched_buy_trade_id INTEGER,
+              reconciliation_status TEXT NOT NULL DEFAULT 'unmatched',
+              executed_sell_price REAL,
+              executed_sell_at TEXT,
+              executed_buy_price REAL,
+              executed_buy_at TEXT,
+              completion_note TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              last_recalibrated_at TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_daily_target_pairs_plan_rank ON daily_target_plan_pairs(plan_id, priority_rank, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_daily_target_pairs_state ON daily_target_plan_pairs(state, updated_at DESC)")
+        pcols = [r["name"] for r in conn.execute("PRAGMA table_info(daily_target_plan_pairs)").fetchall()]
+        if "state" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'")
+        if "current_sell_ref_price" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN current_sell_ref_price REAL NOT NULL DEFAULT 0")
+        if "current_buy_ref_price" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN current_buy_ref_price REAL NOT NULL DEFAULT 0")
+        if "target_progress_pct" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN target_progress_pct REAL NOT NULL DEFAULT 0")
+        if "matched_sell_trade_id" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN matched_sell_trade_id INTEGER")
+        if "matched_buy_trade_id" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN matched_buy_trade_id INTEGER")
+        if "reconciliation_status" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN reconciliation_status TEXT NOT NULL DEFAULT 'unmatched'")
+        if "executed_sell_price" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN executed_sell_price REAL")
+        if "executed_sell_at" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN executed_sell_at TEXT")
+        if "executed_buy_price" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN executed_buy_price REAL")
+        if "executed_buy_at" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN executed_buy_at TEXT")
+        if "completion_note" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN completion_note TEXT")
+        if "updated_at" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN updated_at TEXT")
+        if "last_recalibrated_at" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN last_recalibrated_at TEXT")
+        conn.execute(
+            """
+            UPDATE daily_target_plan_pairs
+            SET state = 'pending'
+            WHERE LOWER(COALESCE(state,'')) NOT IN ('pending','sell_done','buy_done','executed','skipped','replaced')
+            """
+        )
+        conn.execute(
+            """
+            UPDATE daily_target_plan_pairs
+            SET reconciliation_status = 'unmatched'
+            WHERE LOWER(COALESCE(reconciliation_status,'')) NOT IN ('unmatched','partial','matched')
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_target_pair_snapshots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              plan_id INTEGER NOT NULL REFERENCES daily_target_plans(id) ON DELETE CASCADE,
+              pair_id INTEGER NOT NULL REFERENCES daily_target_plan_pairs(id) ON DELETE CASCADE,
+              captured_at TEXT NOT NULL,
+              sell_ref_price REAL NOT NULL DEFAULT 0,
+              buy_ref_price REAL NOT NULL DEFAULT 0,
+              expected_profit_value REAL NOT NULL DEFAULT 0,
+              rotation_score REAL NOT NULL DEFAULT 0,
+              buy_target_exit_price REAL NOT NULL DEFAULT 0,
+              snapshot_note TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_daily_target_pair_snapshots_plan_time ON daily_target_pair_snapshots(plan_id, captured_at DESC, id DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_target_positions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source_pair_id INTEGER NOT NULL REFERENCES daily_target_plan_pairs(id) ON DELETE CASCADE,
+              symbol TEXT NOT NULL,
+              qty REAL NOT NULL DEFAULT 0,
+              initial_qty REAL NOT NULL DEFAULT 0,
+              closed_qty REAL NOT NULL DEFAULT 0,
+              entry_price REAL NOT NULL DEFAULT 0,
+              entry_value REAL NOT NULL DEFAULT 0,
+              realized_profit REAL NOT NULL DEFAULT 0,
+              entry_at TEXT NOT NULL,
+              exit_pair_id INTEGER,
+              exit_price REAL,
+              exit_value REAL,
+              exit_at TEXT,
+              status TEXT NOT NULL DEFAULT 'open',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_daily_target_positions_symbol_status ON daily_target_positions(symbol, status, entry_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_daily_target_positions_pair ON daily_target_positions(source_pair_id, id)")
+        dtp_cols = [r["name"] for r in conn.execute("PRAGMA table_info(daily_target_positions)").fetchall()]
+        if "initial_qty" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN initial_qty REAL NOT NULL DEFAULT 0")
+        if "closed_qty" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN closed_qty REAL NOT NULL DEFAULT 0")
+        if "realized_profit" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN realized_profit REAL NOT NULL DEFAULT 0")
+        conn.execute("UPDATE daily_target_positions SET initial_qty = qty WHERE COALESCE(initial_qty,0) <= 0 AND COALESCE(qty,0) > 0")
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS price_ticks (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               symbol TEXT NOT NULL,
@@ -955,6 +1116,82 @@ def ensure_schema_migrations():
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_strategy_projection_run ON strategy_projection_points(run_date, scenario, year_offset)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_audit_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              strategy_run_date TEXT,
+              audit_mode TEXT NOT NULL DEFAULT 'heuristic',
+              overall_status TEXT NOT NULL DEFAULT 'ok',
+              overall_score REAL NOT NULL DEFAULT 0,
+              summary TEXT,
+              recommendation TEXT,
+              findings_count INTEGER NOT NULL DEFAULT 0,
+              stats_json TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_strategy_audit_runs_created ON strategy_audit_runs(created_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_audit_findings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              audit_id INTEGER NOT NULL REFERENCES strategy_audit_runs(id) ON DELETE CASCADE,
+              severity TEXT NOT NULL,
+              code TEXT NOT NULL,
+              title TEXT NOT NULL,
+              detail TEXT,
+              symbol TEXT,
+              metric_value REAL,
+              expected_range TEXT,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_strategy_audit_findings_audit ON strategy_audit_findings(audit_id, severity, id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tax_rate_sync_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('success','error')),
+              source_label TEXT NOT NULL,
+              source_url TEXT,
+              stcg_rate_pct REAL,
+              ltcg_rate_pct REAL,
+              ltcg_exemption_limit REAL,
+              stt_delivery_rate REAL,
+              stamp_buy_rate REAL,
+              gst_rate REAL,
+              dp_charge_sell REAL,
+              detail TEXT,
+              error TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_tax_rate_sync_runs_created ON tax_rate_sync_runs(created_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attention_alerts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              code TEXT NOT NULL UNIQUE,
+              category TEXT NOT NULL,
+              severity_rank INTEGER NOT NULL DEFAULT 0,
+              severity_label TEXT NOT NULL DEFAULT 'info',
+              status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+              title TEXT NOT NULL,
+              detail TEXT,
+              source_ref TEXT,
+              detected_at TEXT NOT NULL,
+              last_seen_at TEXT NOT NULL,
+              resolved_at TEXT,
+              meta_json TEXT,
+              occurrence_count INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_attention_alerts_status_rank ON attention_alerts(status, severity_rank DESC, last_seen_at DESC)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_backtest_runs (
@@ -1280,6 +1517,25 @@ def ensure_default_config():
         "software_perf_agent_write_changes": "1",
         "software_perf_agent_retention_days": "90",
         "software_perf_agent_core_objective": "Preserve portfolio data integrity and strategy objective.",
+        "tax_monitor_enabled": "1",
+        "tax_monitor_interval_sec": str(TAX_MONITOR_INTERVAL_DEFAULT_SEC),
+        "tax_monitor_last_run_at": "",
+        "tax_monitor_last_success_at": "",
+        "tax_monitor_last_error": "",
+        "tax_monitor_last_change_at": "",
+        "tax_monitor_tax_source_url": DEFAULT_TAX_MONITOR_TAX_URL,
+        "tax_monitor_charges_source_url": DEFAULT_TAX_MONITOR_CHARGES_URL,
+        "tax_rate_effective_from": "2024-07-23",
+        "tax_rate_stcg_pct": "20",
+        "tax_rate_ltcg_pct": "12.5",
+        "tax_rate_ltcg_exemption_limit": "125000",
+        "zerodha_eq_delivery_txn_rate_nse": "0.0000307",
+        "zerodha_eq_delivery_txn_rate_bse": "0.0000375",
+        "zerodha_sebi_rate": "0.000001",
+        "zerodha_stt_delivery_rate": "0.001",
+        "zerodha_stamp_buy_rate": "0.00015",
+        "zerodha_gst_rate": "0.18",
+        "zerodha_dp_charge_sell_incl_gst": "15.34",
         "llm_api_key": "",
         "llm_model": LLM_DEFAULT_MODEL,
         "llm_api_url": LLM_DEFAULT_API_URL,
@@ -1302,6 +1558,165 @@ def ensure_default_config():
                 )
         ensure_quote_source_registry(conn, parse_source_list(DEFAULT_LIVE_QUOTE_SOURCES))
         conn.commit()
+
+
+def _app_config_get_many(conn, keys):
+    key_list = [str(k) for k in (keys or []) if str(k)]
+    if not key_list:
+        return {}
+    placeholders = ",".join(["?"] * len(key_list))
+    rows = conn.execute(
+        f"SELECT key, value FROM app_config WHERE key IN ({placeholders})",
+        key_list,
+    ).fetchall()
+    return {str(r["key"]): str(r["value"] or "") for r in rows}
+
+
+def _app_config_upsert_many(conn, mapping):
+    stamp = now_iso()
+    for key, value in dict(mapping or {}).items():
+        conn.execute(
+            """
+            INSERT INTO app_config(key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (str(key), str(value), stamp),
+        )
+
+
+def get_tax_profile_config(conn):
+    cfg = _app_config_get_many(
+        conn,
+        [
+            "tax_rate_effective_from",
+            "tax_rate_stcg_pct",
+            "tax_rate_ltcg_pct",
+            "tax_rate_ltcg_exemption_limit",
+            "zerodha_eq_delivery_txn_rate_nse",
+            "zerodha_eq_delivery_txn_rate_bse",
+            "zerodha_sebi_rate",
+            "zerodha_stt_delivery_rate",
+            "zerodha_stamp_buy_rate",
+            "zerodha_gst_rate",
+            "zerodha_dp_charge_sell_incl_gst",
+        ],
+    )
+    return {
+        "effective_from": str(cfg.get("tax_rate_effective_from") or "2024-07-23"),
+        "stcg_rate_pct": round(parse_float(cfg.get("tax_rate_stcg_pct"), 20.0), 4),
+        "ltcg_rate_pct": round(parse_float(cfg.get("tax_rate_ltcg_pct"), 12.5), 4),
+        "ltcg_exemption_limit": round(parse_float(cfg.get("tax_rate_ltcg_exemption_limit"), 125000.0), 2),
+        "txn_rate_nse": parse_float(cfg.get("zerodha_eq_delivery_txn_rate_nse"), 0.0000307),
+        "txn_rate_bse": parse_float(cfg.get("zerodha_eq_delivery_txn_rate_bse"), 0.0000375),
+        "sebi_rate": parse_float(cfg.get("zerodha_sebi_rate"), 0.000001),
+        "stt_delivery_rate": parse_float(cfg.get("zerodha_stt_delivery_rate"), 0.001),
+        "stamp_buy_rate": parse_float(cfg.get("zerodha_stamp_buy_rate"), 0.00015),
+        "gst_rate": parse_float(cfg.get("zerodha_gst_rate"), 0.18),
+        "dp_charge_sell_incl_gst": round(parse_float(cfg.get("zerodha_dp_charge_sell_incl_gst"), 15.34), 2),
+    }
+
+
+def set_tax_profile_config(
+    conn,
+    stcg_rate_pct=None,
+    ltcg_rate_pct=None,
+    ltcg_exemption_limit=None,
+    txn_rate_nse=None,
+    txn_rate_bse=None,
+    sebi_rate=None,
+    stt_delivery_rate=None,
+    stamp_buy_rate=None,
+    gst_rate=None,
+    dp_charge_sell_incl_gst=None,
+    effective_from=None,
+):
+    updates = {}
+    if stcg_rate_pct is not None:
+        updates["tax_rate_stcg_pct"] = round(parse_float(stcg_rate_pct, 20.0), 4)
+    if ltcg_rate_pct is not None:
+        updates["tax_rate_ltcg_pct"] = round(parse_float(ltcg_rate_pct, 12.5), 4)
+    if ltcg_exemption_limit is not None:
+        updates["tax_rate_ltcg_exemption_limit"] = round(parse_float(ltcg_exemption_limit, 125000.0), 2)
+    if txn_rate_nse is not None:
+        updates["zerodha_eq_delivery_txn_rate_nse"] = parse_float(txn_rate_nse, 0.0000307)
+    if txn_rate_bse is not None:
+        updates["zerodha_eq_delivery_txn_rate_bse"] = parse_float(txn_rate_bse, 0.0000375)
+    if sebi_rate is not None:
+        updates["zerodha_sebi_rate"] = parse_float(sebi_rate, 0.000001)
+    if stt_delivery_rate is not None:
+        updates["zerodha_stt_delivery_rate"] = parse_float(stt_delivery_rate, 0.001)
+    if stamp_buy_rate is not None:
+        updates["zerodha_stamp_buy_rate"] = parse_float(stamp_buy_rate, 0.00015)
+    if gst_rate is not None:
+        updates["zerodha_gst_rate"] = parse_float(gst_rate, 0.18)
+    if dp_charge_sell_incl_gst is not None:
+        updates["zerodha_dp_charge_sell_incl_gst"] = round(parse_float(dp_charge_sell_incl_gst, 15.34), 2)
+    if effective_from is not None:
+        updates["tax_rate_effective_from"] = str(effective_from or "").strip() or "2024-07-23"
+    if updates:
+        _app_config_upsert_many(conn, updates)
+
+
+def get_tax_monitor_config(conn):
+    cfg = _app_config_get_many(
+        conn,
+        [
+            "tax_monitor_enabled",
+            "tax_monitor_interval_sec",
+            "tax_monitor_last_run_at",
+            "tax_monitor_last_success_at",
+            "tax_monitor_last_error",
+            "tax_monitor_last_change_at",
+            "tax_monitor_tax_source_url",
+            "tax_monitor_charges_source_url",
+        ],
+    )
+    try:
+        interval_sec = int(float(cfg.get("tax_monitor_interval_sec", str(TAX_MONITOR_INTERVAL_DEFAULT_SEC))))
+    except Exception:
+        interval_sec = TAX_MONITOR_INTERVAL_DEFAULT_SEC
+    return {
+        "enabled": str(cfg.get("tax_monitor_enabled", "1")) == "1",
+        "interval_seconds": max(TAX_MONITOR_MIN_INTERVAL_SEC, interval_sec),
+        "last_run_at": str(cfg.get("tax_monitor_last_run_at", "") or ""),
+        "last_success_at": str(cfg.get("tax_monitor_last_success_at", "") or ""),
+        "last_error": str(cfg.get("tax_monitor_last_error", "") or ""),
+        "last_change_at": str(cfg.get("tax_monitor_last_change_at", "") or ""),
+        "tax_source_url": str(cfg.get("tax_monitor_tax_source_url") or DEFAULT_TAX_MONITOR_TAX_URL),
+        "charges_source_url": str(cfg.get("tax_monitor_charges_source_url") or DEFAULT_TAX_MONITOR_CHARGES_URL),
+    }
+
+
+def set_tax_monitor_config(
+    conn,
+    enabled=None,
+    interval_seconds=None,
+    last_run_at=None,
+    last_success_at=None,
+    last_error=None,
+    last_change_at=None,
+    tax_source_url=None,
+    charges_source_url=None,
+):
+    updates = {}
+    if enabled is not None:
+        updates["tax_monitor_enabled"] = "1" if bool(enabled) else "0"
+    if interval_seconds is not None:
+        updates["tax_monitor_interval_sec"] = max(TAX_MONITOR_MIN_INTERVAL_SEC, int(interval_seconds))
+    if last_run_at is not None:
+        updates["tax_monitor_last_run_at"] = str(last_run_at or "")
+    if last_success_at is not None:
+        updates["tax_monitor_last_success_at"] = str(last_success_at or "")
+    if last_error is not None:
+        updates["tax_monitor_last_error"] = str(last_error or "")
+    if last_change_at is not None:
+        updates["tax_monitor_last_change_at"] = str(last_change_at or "")
+    if tax_source_url is not None:
+        updates["tax_monitor_tax_source_url"] = str(tax_source_url or "").strip() or DEFAULT_TAX_MONITOR_TAX_URL
+    if charges_source_url is not None:
+        updates["tax_monitor_charges_source_url"] = str(charges_source_url or "").strip() or DEFAULT_TAX_MONITOR_CHARGES_URL
+    if updates:
+        _app_config_upsert_many(conn, updates)
 
 
 def backup_database():
@@ -3949,6 +4364,8 @@ def build_agents_status(conn):
     chart_cfg = get_chart_agent_config(conn)
     perf_cfg = get_software_perf_agent_config(conn)
     risk_cfg = get_risk_agent_config(conn)
+    tax_monitor_cfg = get_tax_monitor_config(conn)
+    tax_cfg = get_tax_profile_config(conn)
     bt = latest_backtest_run(conn)
     intel_recent = conn.execute(
         """
@@ -4150,7 +4567,254 @@ def build_agents_status(conn):
                 else "no snapshots yet; computes volatility, drawdown, VaR/CVaR, correlation and concentration risk"
             ),
         },
+        {
+            "agent": "tax_monitor",
+            "label": "Tax Rate Monitor",
+            "enabled": bool(tax_monitor_cfg.get("enabled")),
+            "interval_seconds": int(tax_monitor_cfg.get("interval_seconds", TAX_MONITOR_INTERVAL_DEFAULT_SEC)),
+            "last_run_at": tax_monitor_cfg.get("last_run_at") or (tax_latest["created_at"] if tax_latest else ""),
+            "status": "running" if bool(tax_monitor_cfg.get("enabled")) else "paused",
+            "details": (
+                f"STCG={round(parse_float(tax_cfg.get('stcg_rate_pct'), 0.0), 2)}%; "
+                f"LTCG={round(parse_float(tax_cfg.get('ltcg_rate_pct'), 0.0), 2)}%; "
+                f"Exemption={money(tax_cfg.get('ltcg_exemption_limit'))}; "
+                f"last_success={tax_monitor_cfg.get('last_success_at') or '-'}; "
+                f"last_error={tax_monitor_cfg.get('last_error') or '-'}"
+            ),
+        },
     ]
+
+
+def run_tax_rate_monitor_once(conn=None, force=False, timeout=8):
+    owns_conn = conn is None
+    cm = None
+    if owns_conn:
+        cm = db_connect()
+        conn = cm.__enter__()
+    try:
+        cfg = get_tax_monitor_config(conn)
+        last_run_dt = _parse_iso_datetime_safe(cfg.get("last_run_at"))
+        if (not force) and last_run_dt is not None:
+            age = max(0.0, (dt.datetime.now() - last_run_dt.replace(tzinfo=None) if last_run_dt.tzinfo else dt.datetime.now() - last_run_dt).total_seconds())
+            if age < int(cfg.get("interval_seconds", TAX_MONITOR_INTERVAL_DEFAULT_SEC)):
+                return {"ok": True, "executed": False, "reason": "interval_not_elapsed", "config": cfg}
+        opener = urllib.request.build_opener()
+        headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.9"}
+        run_at = now_iso()
+        try:
+            tax_text = _http_text(opener, cfg.get("tax_source_url"), headers, timeout=max(4, int(timeout)))
+            charges_text = _http_text(opener, cfg.get("charges_source_url"), headers, timeout=max(4, int(timeout)))
+            observed = _parse_tax_monitor_snapshot(tax_text, charges_text)
+            current = get_tax_profile_config(conn)
+            changes = []
+            for key in (
+                "stcg_rate_pct",
+                "ltcg_rate_pct",
+                "ltcg_exemption_limit",
+                "txn_rate_nse",
+                "txn_rate_bse",
+                "stt_delivery_rate",
+                "stamp_buy_rate",
+                "gst_rate",
+                "dp_charge_sell_incl_gst",
+            ):
+                old_v = parse_float(current.get(key), 0.0)
+                new_v = parse_float(observed.get(key), 0.0)
+                tol = 0.0000005 if "rate" in key else 0.005
+                if abs(old_v - new_v) > tol:
+                    changes.append({"field": key, "old": old_v, "new": new_v})
+            set_tax_profile_config(
+                conn,
+                stcg_rate_pct=observed.get("stcg_rate_pct"),
+                ltcg_rate_pct=observed.get("ltcg_rate_pct"),
+                ltcg_exemption_limit=observed.get("ltcg_exemption_limit"),
+                txn_rate_nse=observed.get("txn_rate_nse"),
+                txn_rate_bse=observed.get("txn_rate_bse"),
+                stt_delivery_rate=observed.get("stt_delivery_rate"),
+                stamp_buy_rate=observed.get("stamp_buy_rate"),
+                gst_rate=observed.get("gst_rate"),
+                dp_charge_sell_incl_gst=observed.get("dp_charge_sell_incl_gst"),
+            )
+            set_tax_monitor_config(
+                conn,
+                last_run_at=run_at,
+                last_success_at=run_at,
+                last_error="",
+                last_change_at=(run_at if changes else None),
+            )
+            _insert_tax_rate_sync_run(
+                conn,
+                "success",
+                "zerodha_tax_monitor",
+                source_url=cfg.get("tax_source_url"),
+                snapshot=observed,
+                detail=("changes=" + json.dumps(changes, ensure_ascii=True)) if changes else "no_change",
+            )
+            if changes:
+                upsert_attention_alert(
+                    conn,
+                    "TAX_RATE_SOURCE_CHANGED",
+                    "tax_monitor",
+                    92,
+                    "critical",
+                    "Tax or charge rates changed from monitored source",
+                    detail="; ".join([f"{c['field']}: {c['old']} -> {c['new']}" for c in changes[:8]]),
+                    source_ref=cfg.get("tax_source_url") or "",
+                    meta={"changes": changes},
+                )
+            else:
+                resolve_attention_alert(conn, "TAX_RATE_SOURCE_CHANGED", detail="Latest monitored source matches stored rates.")
+            resolve_attention_alert(conn, "TAX_RATE_SYNC_FAILED", detail="Tax rate monitor source refresh succeeded.")
+            resolve_attention_alert(conn, "TAX_RATE_MONITOR_STALE", detail="Tax rate monitor is receiving fresh source updates.")
+            conn.commit()
+            return {"ok": True, "executed": True, "changed": bool(changes), "changes": changes, "observed": observed, "config": get_tax_monitor_config(conn)}
+        except Exception as ex:
+            err = str(ex)
+            set_tax_monitor_config(conn, last_run_at=run_at, last_error=err)
+            _insert_tax_rate_sync_run(
+                conn,
+                "error",
+                "zerodha_tax_monitor",
+                source_url=(cfg.get("tax_source_url") or ""),
+                detail="fetch_or_parse_failed",
+                error=err,
+            )
+            upsert_attention_alert(
+                conn,
+                "TAX_RATE_SYNC_FAILED",
+                "tax_monitor",
+                96,
+                "critical",
+                "Tax rate monitor failed to refresh source rates",
+                detail=err,
+                source_ref=(cfg.get("tax_source_url") or ""),
+                meta={"charges_source_url": cfg.get("charges_source_url")},
+            )
+            conn.commit()
+            return {"ok": False, "executed": True, "error": err, "config": get_tax_monitor_config(conn)}
+    finally:
+        if owns_conn and cm is not None:
+            cm.__exit__(None, None, None)
+
+
+def refresh_attention_alerts(conn):
+    tax_cfg = get_tax_profile_config(conn)
+    tax_monitor_cfg = get_tax_monitor_config(conn)
+    repo_cfg = get_repo_sync_config(conn)
+    llm_cfg = get_llm_runtime_config(conn, include_secret=False)
+    perf_latest_row = conn.execute(
+        """
+        SELECT created_at, issue_count, live_stale_symbols, live_missing_price_symbols, weak_sources_count
+        FROM software_perf_snapshots
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    perf_latest = dict(perf_latest_row) if perf_latest_row else {}
+
+    last_success_dt = _parse_iso_datetime_safe(tax_monitor_cfg.get("last_success_at"))
+    stale_threshold = max(int(tax_monitor_cfg.get("interval_seconds", TAX_MONITOR_INTERVAL_DEFAULT_SEC)) * 2, 2 * 24 * 60 * 60)
+    if last_success_dt is None or (dt.datetime.now() - (last_success_dt.replace(tzinfo=None) if last_success_dt.tzinfo else last_success_dt)).total_seconds() > stale_threshold:
+        upsert_attention_alert(
+            conn,
+            "TAX_RATE_MONITOR_STALE",
+            "tax_monitor",
+            78,
+            "warning",
+            "Tax rate monitor has not refreshed recently",
+            detail=f"Last success: {tax_monitor_cfg.get('last_success_at') or '-'}; interval={int(tax_monitor_cfg.get('interval_seconds', TAX_MONITOR_INTERVAL_DEFAULT_SEC))} sec.",
+            source_ref=tax_monitor_cfg.get("tax_source_url") or "",
+        )
+    else:
+        resolve_attention_alert(conn, "TAX_RATE_MONITOR_STALE")
+
+    if str(repo_cfg.get("last_error") or "").strip():
+        upsert_attention_alert(
+            conn,
+            "REPO_SYNC_ERROR",
+            "repo_sync",
+            58,
+            "warning",
+            "Repository sync reported an error",
+            detail=str(repo_cfg.get("last_error") or ""),
+        )
+    else:
+        resolve_attention_alert(conn, "REPO_SYNC_ERROR")
+
+    if str(llm_cfg.get("last_status") or "").lower() == "error" and str(llm_cfg.get("last_error") or "").strip():
+        upsert_attention_alert(
+            conn,
+            "LLM_RUNTIME_ERROR",
+            "llm",
+            52,
+            "warning",
+            "LLM runtime reported an error",
+            detail=str(llm_cfg.get("last_error") or ""),
+        )
+    else:
+        resolve_attention_alert(conn, "LLM_RUNTIME_ERROR")
+
+    perf_issue_count = int(parse_float(perf_latest.get("issue_count"), 0.0)) if perf_latest else 0
+    if perf_issue_count > 0:
+        upsert_attention_alert(
+            conn,
+            "SOFTWARE_PERF_OPEN_ISSUES",
+            "software_performance",
+            min(72, 40 + perf_issue_count),
+            "warning",
+            "Software Performance Agent still sees open issues",
+            detail=(
+                f"issues={perf_issue_count}; stale={int(parse_float(perf_latest.get('live_stale_symbols'), 0.0))}; "
+                f"missing={int(parse_float(perf_latest.get('live_missing_price_symbols'), 0.0))}; "
+                f"weak_sources={int(parse_float(perf_latest.get('weak_sources_count'), 0.0))}"
+            ),
+            meta={"created_at": str(perf_latest.get("created_at") or "")},
+        )
+    else:
+        resolve_attention_alert(conn, "SOFTWARE_PERF_OPEN_ISSUES")
+
+    return {
+        "tax_profile": tax_cfg,
+        "tax_monitor": tax_monitor_cfg,
+    }
+
+
+def build_attention_console_payload(conn):
+    ctx = refresh_attention_alerts(conn)
+    alerts = list_attention_alerts(conn, status=None, limit=120)
+    open_alerts = [x for x in alerts if str(x.get("status") or "").lower() == "open"]
+    resolved_alerts = [x for x in alerts if str(x.get("status") or "").lower() == "resolved"][:25]
+    sev_counts = defaultdict(int)
+    for item in open_alerts:
+        sev_counts[str(item.get("severity_label") or "info").lower()] += 1
+    latest_sync = conn.execute(
+        """
+        SELECT created_at, status, detail, error
+        FROM tax_rate_sync_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    latest_sync_item = dict(latest_sync) if latest_sync else {}
+    return {
+        "summary": {
+            "open_count": len(open_alerts),
+            "resolved_count": len(resolved_alerts),
+            "critical_open": sev_counts.get("critical", 0),
+            "warning_open": sev_counts.get("warning", 0),
+            "info_open": sev_counts.get("info", 0),
+            "latest_tax_sync_at": str(latest_sync_item.get("created_at") or ""),
+            "latest_tax_sync_status": str(latest_sync_item.get("status") or ""),
+        },
+        "tax_profile": {
+            **dict(ctx.get("tax_profile") or {}),
+            **compute_realized_equity_tax_summary(conn),
+        },
+        "tax_monitor": dict(ctx.get("tax_monitor") or {}),
+        "open_alerts": open_alerts,
+        "resolved_alerts": resolved_alerts,
+        "tax_sync_runs": list_tax_rate_sync_runs(conn, limit=25),
+    }
 
 
 def get_active_params(conn):
@@ -4318,6 +4982,14 @@ def get_last_trade_snapshot(conn, symbol):
         LIMIT 1
         """,
         (symbol_q,),
+    ).fetchone()
+    tax_latest = conn.execute(
+        """
+        SELECT created_at, status, detail, error
+        FROM tax_rate_sync_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
     ).fetchone()
     if not row:
         return None
@@ -7929,6 +8601,409 @@ def latest_strategy_recommendation_map(conn):
     return out
 
 
+def _strategy_audit_finding(severity, code, title, detail="", symbol="", metric_value=None, expected_range=""):
+    sev = str(severity or "info").strip().lower() or "info"
+    if sev not in ("critical", "warn", "info"):
+        sev = "info"
+    return {
+        "severity": sev,
+        "code": str(code or "").strip().lower() or "general",
+        "title": str(title or "").strip() or "Finding",
+        "detail": str(detail or "").strip(),
+        "symbol": symbol_upper(symbol) if symbol else "",
+        "metric_value": None if metric_value is None else round(parse_float(metric_value, 0.0), 4),
+        "expected_range": str(expected_range or "").strip(),
+    }
+
+
+def _persist_strategy_audit_run(conn, payload):
+    ts = now_iso()
+    findings = list(payload.get("findings") or [])
+    stats = dict(payload.get("stats") or {})
+    conn.execute(
+        """
+        INSERT INTO strategy_audit_runs(
+          created_at, strategy_run_date, audit_mode, overall_status, overall_score,
+          summary, recommendation, findings_count, stats_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ts,
+            str(payload.get("strategy_run_date") or ""),
+            str(payload.get("audit_mode") or "heuristic"),
+            str(payload.get("overall_status") or "ok"),
+            round(parse_float(payload.get("overall_score"), 0.0), 2),
+            str(payload.get("summary") or ""),
+            str(payload.get("recommendation") or ""),
+            len(findings),
+            _safe_json_dumps(stats),
+        ),
+    )
+    audit_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    for f in findings:
+        conn.execute(
+            """
+            INSERT INTO strategy_audit_findings(
+              audit_id, severity, code, title, detail, symbol, metric_value, expected_range, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit_id,
+                str(f.get("severity") or "info"),
+                str(f.get("code") or ""),
+                str(f.get("title") or ""),
+                str(f.get("detail") or ""),
+                str(f.get("symbol") or ""),
+                (None if f.get("metric_value") is None else round(parse_float(f.get("metric_value"), 0.0), 4)),
+                str(f.get("expected_range") or ""),
+                ts,
+            ),
+        )
+    payload["audit_id"] = audit_id
+    payload["created_at"] = ts
+    return payload
+
+
+def get_strategy_audit_run(conn, audit_id):
+    row = conn.execute(
+        """
+        SELECT id, created_at, strategy_run_date, audit_mode, overall_status, overall_score,
+               summary, recommendation, findings_count, stats_json
+        FROM strategy_audit_runs
+        WHERE id = ?
+        """,
+        (int(parse_float(audit_id, 0.0)),),
+    ).fetchone()
+    if not row:
+        return None
+    findings = [
+        {
+            "id": int(parse_float(r["id"], 0.0)),
+            "severity": str(r["severity"] or "info"),
+            "code": str(r["code"] or ""),
+            "title": str(r["title"] or ""),
+            "detail": str(r["detail"] or ""),
+            "symbol": str(r["symbol"] or ""),
+            "metric_value": None if r["metric_value"] is None else round(parse_float(r["metric_value"], 0.0), 4),
+            "expected_range": str(r["expected_range"] or ""),
+            "created_at": str(r["created_at"] or ""),
+        }
+        for r in conn.execute(
+            """
+            SELECT id, severity, code, title, detail, symbol, metric_value, expected_range, created_at
+            FROM strategy_audit_findings
+            WHERE audit_id = ?
+            ORDER BY CASE LOWER(severity) WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, id ASC
+            """,
+            (int(parse_float(audit_id, 0.0)),),
+        ).fetchall()
+    ]
+    out = {
+        "audit_id": int(parse_float(row["id"], 0.0)),
+        "created_at": str(row["created_at"] or ""),
+        "strategy_run_date": str(row["strategy_run_date"] or ""),
+        "audit_mode": str(row["audit_mode"] or "heuristic"),
+        "overall_status": str(row["overall_status"] or "ok"),
+        "overall_score": round(parse_float(row["overall_score"], 0.0), 2),
+        "summary": str(row["summary"] or ""),
+        "recommendation": str(row["recommendation"] or ""),
+        "findings_count": int(parse_float(row["findings_count"], 0.0)),
+        "stats": _safe_json_loads(row["stats_json"], {}),
+        "findings": findings,
+    }
+    return out
+
+
+def list_strategy_audit_runs(conn, limit=25):
+    lim = max(1, min(200, int(parse_float(limit, 25))))
+    rows = conn.execute(
+        """
+        SELECT id, created_at, strategy_run_date, audit_mode, overall_status, overall_score,
+               summary, recommendation, findings_count, stats_json
+        FROM strategy_audit_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (lim,),
+    ).fetchall()
+    items = []
+    for r in rows:
+        stats = _safe_json_loads(r["stats_json"], {})
+        items.append(
+            {
+                "audit_id": int(parse_float(r["id"], 0.0)),
+                "created_at": str(r["created_at"] or ""),
+                "strategy_run_date": str(r["strategy_run_date"] or ""),
+                "audit_mode": str(r["audit_mode"] or "heuristic"),
+                "overall_status": str(r["overall_status"] or "ok"),
+                "overall_score": round(parse_float(r["overall_score"], 0.0), 2),
+                "summary": str(r["summary"] or ""),
+                "recommendation": str(r["recommendation"] or ""),
+                "findings_count": int(parse_float(r["findings_count"], 0.0)),
+                "critical_count": int(parse_float(stats.get("critical_count"), 0.0)),
+                "warn_count": int(parse_float(stats.get("warn_count"), 0.0)),
+                "info_count": int(parse_float(stats.get("info_count"), 0.0)),
+            }
+        )
+    latest = get_strategy_audit_run(conn, items[0]["audit_id"]) if items else None
+    return {"items": items, "latest": latest}
+
+
+def run_strategy_audit(conn, refresh_strategy=False):
+    refresh_flag = bool(refresh_strategy)
+    today = dt.date.today().isoformat()
+    insights = load_latest_strategy_insights(conn)
+    if refresh_flag or insights is None:
+        fresh = build_strategy_insights(conn, run_date=today)
+        persist_strategy_insights(conn, fresh)
+        conn.commit()
+        insights = load_latest_strategy_insights(conn)
+    if not insights:
+        raise ValueError("strategy_insights_unavailable")
+
+    recs = list(insights.get("recommendations") or [])
+    counts = dict(insights.get("counts") or {})
+    macro = dict(insights.get("macro") or {})
+    intel = dict(insights.get("intelligence") or {})
+    bt = latest_backtest_run(conn)
+    findings = []
+
+    total = len(recs)
+    addish = [r for r in recs if str(r.get("action") or "").upper() in ("ADD", "WATCH_ADD")]
+    trimish = [r for r in recs if str(r.get("action") or "").upper() == "TRIM"]
+    reviewish = [r for r in recs if str(r.get("action") or "").upper() == "REVIEW"]
+    low_conf = [r for r in recs if parse_float(r.get("confidence"), 0.0) < 0.45]
+    negative_add = [r for r in addish if parse_float(r.get("expected_annual_return"), 0.0) <= 0]
+    positive_trim = [r for r in trimish if parse_float(r.get("expected_annual_return"), 0.0) > 0.12]
+    missing_reason = [r for r in recs if not str(r.get("reason") or "").strip()]
+    overweight = [r for r in recs if parse_float(r.get("weight_target"), 0.0) > 0.18]
+    weight_sum = sum(max(0.0, parse_float(r.get("weight_target"), 0.0)) for r in recs)
+
+    if total == 0:
+        findings.append(_strategy_audit_finding("critical", "no_recommendations", "No strategy recommendations available", "Run strategy refresh before taking trades."))
+    if total > 0 and (len(low_conf) / max(1, total)) >= 0.45:
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "low_confidence_mix",
+                "Large share of recommendations have low confidence",
+                f"{len(low_conf)} of {total} recommendations are below 45% confidence.",
+                metric_value=(len(low_conf) / max(1, total)) * 100.0,
+                expected_range="< 45%",
+            )
+        )
+    if reviewish and (len(reviewish) / max(1, total)) >= 0.30:
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "too_many_review_flags",
+                "Too many REVIEW recommendations",
+                f"{len(reviewish)} of {total} names are flagged REVIEW, which weakens actionability.",
+                metric_value=(len(reviewish) / max(1, total)) * 100.0,
+                expected_range="< 30%",
+            )
+        )
+    for r in negative_add[:8]:
+        findings.append(
+            _strategy_audit_finding(
+                "critical",
+                "negative_add_expectation",
+                "ADD recommendation has non-positive expected return",
+                f"{r.get('symbol')} is marked {r.get('action')} even though expected annual return is {parse_float(r.get('expected_annual_return'), 0.0) * 100.0:+.1f}%.",
+                symbol=r.get("symbol"),
+                metric_value=parse_float(r.get("expected_annual_return"), 0.0) * 100.0,
+                expected_range="> 0%",
+            )
+        )
+    for r in positive_trim[:5]:
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "trim_positive_expectation",
+                "TRIM recommendation still has strong positive expectation",
+                f"{r.get('symbol')} is marked TRIM with expected annual return {parse_float(r.get('expected_annual_return'), 0.0) * 100.0:+.1f}%. Validate whether sizing logic is too defensive.",
+                symbol=r.get("symbol"),
+                metric_value=parse_float(r.get("expected_annual_return"), 0.0) * 100.0,
+                expected_range="<= 12%",
+            )
+        )
+    if missing_reason:
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "missing_reason_text",
+                "Some recommendations are missing reasons",
+                f"{len(missing_reason)} recommendations do not include a reason string.",
+                metric_value=len(missing_reason),
+                expected_range="0",
+            )
+        )
+    if weight_sum > 1.15 or (weight_sum > 0 and weight_sum < 0.85):
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "target_weight_sum",
+                "Target weights look imbalanced",
+                f"Total target weight sums to {weight_sum:.2f}.",
+                metric_value=weight_sum,
+                expected_range="0.85 to 1.15",
+            )
+        )
+    if overweight:
+        top = sorted(overweight, key=lambda x: parse_float(x.get("weight_target"), 0.0), reverse=True)[0]
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "single_name_concentration",
+                "Single-name concentration is high",
+                f"{top.get('symbol')} target weight is {parse_float(top.get('weight_target'), 0.0) * 100.0:.1f}%.",
+                symbol=top.get("symbol"),
+                metric_value=parse_float(top.get("weight_target"), 0.0) * 100.0,
+                expected_range="<= 18%",
+            )
+        )
+    macro_conf = parse_float(macro.get("confidence"), 0.0)
+    intel_conf = parse_float(intel.get("confidence"), 0.0)
+    if macro_conf < 0.45:
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "macro_low_confidence",
+                "Macro layer confidence is low",
+                f"Macro confidence is only {macro_conf * 100.0:.1f}%.",
+                metric_value=macro_conf * 100.0,
+                expected_range=">= 45%",
+            )
+        )
+    if intel_conf < 0.45:
+        findings.append(
+            _strategy_audit_finding(
+                "warn",
+                "intel_low_confidence",
+                "Intelligence layer confidence is low",
+                f"Intelligence confidence is only {intel_conf * 100.0:.1f}%.",
+                metric_value=intel_conf * 100.0,
+                expected_range=">= 45%",
+            )
+        )
+    if bt is None:
+        findings.append(_strategy_audit_finding("warn", "backtest_missing", "No recent backtest available", "Run a backtest to validate signal quality before trusting the audit."))
+    else:
+        hit_rate = parse_float(bt.get("hit_rate"), 0.0)
+        sample_count = int(parse_float(bt.get("sample_count"), 0.0))
+        age_days = 0
+        try:
+            bt_dt = dt.datetime.fromisoformat(str(bt.get("created_at") or ""))
+            age_days = max(0, int((dt.datetime.now() - bt_dt).total_seconds() // 86400))
+        except Exception:
+            age_days = 0
+        if sample_count < 25:
+            findings.append(
+                _strategy_audit_finding(
+                    "warn",
+                    "backtest_small_sample",
+                    "Backtest sample size is small",
+                    f"Latest backtest has only {sample_count} samples.",
+                    metric_value=sample_count,
+                    expected_range=">= 25",
+                )
+            )
+        if hit_rate < 0.45:
+            sev = "critical" if hit_rate < 0.40 else "warn"
+            findings.append(
+                _strategy_audit_finding(
+                    sev,
+                    "backtest_hit_rate_low",
+                    "Backtest hit rate is below threshold",
+                    f"Latest hit rate is {hit_rate * 100.0:.1f}% over {sample_count} samples.",
+                    metric_value=hit_rate * 100.0,
+                    expected_range=">= 45%",
+                )
+            )
+        if age_days >= 14:
+            findings.append(
+                _strategy_audit_finding(
+                    "info",
+                    "backtest_stale",
+                    "Backtest is getting stale",
+                    f"Latest backtest was run {age_days} day(s) ago.",
+                    metric_value=age_days,
+                    expected_range="< 14 days",
+                )
+            )
+
+    critical_count = sum(1 for f in findings if f.get("severity") == "critical")
+    warn_count = sum(1 for f in findings if f.get("severity") == "warn")
+    info_count = sum(1 for f in findings if f.get("severity") == "info")
+    overall_score = clamp(100.0 - (critical_count * 22.0) - (warn_count * 9.0) - (info_count * 3.0), 0.0, 100.0)
+    overall_status = "critical" if critical_count > 0 else "warn" if warn_count > 0 else "ok"
+    summary = (
+        f"{critical_count} critical, {warn_count} warning, {info_count} info finding(s). "
+        f"Audit score {overall_score:.1f}/100."
+    )
+    recommendation = (
+        "Refresh or retune strategy before acting on it."
+        if overall_status == "critical"
+        else "Use with caution; review flagged sizing/confidence issues."
+        if overall_status == "warn"
+        else "Strategy health looks acceptable under heuristic audit."
+    )
+    stats = {
+        "recommendation_count": total,
+        "add_count": len(addish),
+        "trim_count": len(trimish),
+        "review_count": len(reviewish),
+        "low_confidence_count": len(low_conf),
+        "negative_add_count": len(negative_add),
+        "positive_trim_count": len(positive_trim),
+        "missing_reason_count": len(missing_reason),
+        "overweight_count": len(overweight),
+        "target_weight_sum": round(weight_sum, 6),
+        "macro_confidence": round(macro_conf, 4),
+        "intel_confidence": round(intel_conf, 4),
+        "critical_count": critical_count,
+        "warn_count": warn_count,
+        "info_count": info_count,
+        "backtest_hit_rate": round(parse_float((bt or {}).get("hit_rate"), 0.0), 4),
+        "backtest_sample_count": int(parse_float((bt or {}).get("sample_count"), 0.0)),
+    }
+    payload = {
+        "strategy_run_date": str(insights.get("run_date") or ""),
+        "audit_mode": "heuristic",
+        "overall_status": overall_status,
+        "overall_score": round(overall_score, 2),
+        "summary": summary,
+        "recommendation": recommendation,
+        "stats": stats,
+        "findings": findings,
+        "strategy_snapshot": {
+            "run_date": str(insights.get("run_date") or ""),
+            "generated_at": str(insights.get("generated_at") or ""),
+            "counts": counts,
+            "macro": {
+                "regime": str(macro.get("regime") or ""),
+                "score": round(parse_float(macro.get("score"), 0.0), 4),
+                "confidence": round(macro_conf, 4),
+            },
+            "intelligence": {
+                "score": round(parse_float(intel.get("score"), 0.0), 4),
+                "confidence": round(intel_conf, 4),
+            },
+        },
+        "backtest": {
+            "created_at": str((bt or {}).get("created_at") or ""),
+            "hit_rate": round(parse_float((bt or {}).get("hit_rate"), 0.0), 4),
+            "sample_count": int(parse_float((bt or {}).get("sample_count"), 0.0)),
+            "avg_future_return": round(parse_float((bt or {}).get("avg_future_return"), 0.0), 4),
+        },
+    }
+    _persist_strategy_audit_run(conn, payload)
+    conn.commit()
+    return payload
+
+
 def _harvest_action_bias(action):
     act = str(action or "").strip().upper()
     if act == "TRIM":
@@ -8013,6 +9088,304 @@ def _harvest_tax_bucket_bias(bucket, side="loss"):
     if b == "LTCG":
         return 2.0 if side_s == "loss" else 0.5
     return 0.0
+
+
+def _india_fy_bounds(as_of_date=None):
+    d = parse_history_date(as_of_date) or ist_now().date()
+    start_year = d.year if d.month >= 4 else (d.year - 1)
+    start = dt.date(start_year, 4, 1)
+    end = dt.date(start_year + 1, 3, 31)
+    return {
+        "fy_label": f"FY{start_year}-{str(start_year + 1)[-2:]}",
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+    }
+
+
+def compute_realized_equity_tax_summary(conn, as_of_date=None):
+    fy = _india_fy_bounds(as_of_date=as_of_date)
+    split_map = load_split_map(conn)
+    tax_cfg = get_tax_profile_config(conn)
+    start_d = dt.date.fromisoformat(fy["start_date"])
+    end_d = dt.date.fromisoformat(fy["end_date"])
+    rows = conn.execute(
+        """
+        SELECT t.id, UPPER(t.symbol) AS symbol, UPPER(t.side) AS side, t.trade_date, t.quantity, t.price,
+               UPPER(COALESCE(i.asset_class, 'EQUITY')) AS asset_class
+        FROM trades t
+        LEFT JOIN instruments i ON UPPER(i.symbol) = UPPER(t.symbol)
+        WHERE t.trade_date <= ?
+        ORDER BY t.trade_date, t.id
+        """,
+        (fy["end_date"],),
+    ).fetchall()
+    lots_by_symbol = defaultdict(deque)
+    stcg_gain = 0.0
+    stcg_loss = 0.0
+    ltcg_gain = 0.0
+    ltcg_loss = 0.0
+    for r in rows:
+        if str(r["asset_class"] or "EQUITY").upper() == "GOLD":
+            continue
+        symbol = symbol_upper(r["symbol"])
+        side = str(r["side"] or "").upper()
+        trade_date = str(r["trade_date"] or "")[:10]
+        q, p = adjusted_trade_values(symbol, trade_date, float(r["quantity"]), float(r["price"]), split_map)
+        if q <= 0 or p <= 0:
+            continue
+        if side == "BUY":
+            lots_by_symbol[symbol].append({"qty": q, "buy_price": p, "buy_date": trade_date})
+            continue
+        if side != "SELL":
+            continue
+        sell_d = parse_history_date(trade_date)
+        remaining = q
+        while remaining > 1e-9 and lots_by_symbol[symbol]:
+            lot = lots_by_symbol[symbol][0]
+            matched = min(remaining, parse_float(lot.get("qty"), 0.0))
+            if matched <= 0:
+                lots_by_symbol[symbol].popleft()
+                continue
+            if sell_d and start_d <= sell_d <= end_d:
+                pnl = (p - parse_float(lot.get("buy_price"), 0.0)) * matched
+                bucket, _held_days = _harvest_tax_bucket(lot.get("buy_date"), as_of_date=trade_date)
+                if pnl >= 0:
+                    if bucket == "LTCG":
+                        ltcg_gain += pnl
+                    else:
+                        stcg_gain += pnl
+                else:
+                    if bucket == "LTCG":
+                        ltcg_loss += abs(pnl)
+                    else:
+                        stcg_loss += abs(pnl)
+            lot["qty"] = max(0.0, parse_float(lot.get("qty"), 0.0) - matched)
+            if parse_float(lot.get("qty"), 0.0) <= 1e-9:
+                lots_by_symbol[symbol].popleft()
+            remaining -= matched
+    ltcg_net_gain = max(0.0, ltcg_gain - ltcg_loss)
+    stcg_net_gain = max(0.0, stcg_gain - stcg_loss)
+    ltcg_remaining_exemption = max(0.0, parse_float(tax_cfg.get("ltcg_exemption_limit"), 125000.0) - ltcg_net_gain)
+    return {
+        "fy_label": fy["fy_label"],
+        "fy_start_date": fy["start_date"],
+        "fy_end_date": fy["end_date"],
+        "stcg_gain": round(stcg_gain, 2),
+        "stcg_loss": round(stcg_loss, 2),
+        "ltcg_gain": round(ltcg_gain, 2),
+        "ltcg_loss": round(ltcg_loss, 2),
+        "stcg_net_gain": round(stcg_net_gain, 2),
+        "ltcg_net_gain": round(ltcg_net_gain, 2),
+        "ltcg_exemption_limit": round(parse_float(tax_cfg.get("ltcg_exemption_limit"), 125000.0), 2),
+        "ltcg_remaining_exemption": round(ltcg_remaining_exemption, 2),
+    }
+
+
+def _parse_iso_datetime_safe(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _strip_html_to_text(raw_html):
+    text = str(raw_html or "")
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _parse_tax_monitor_snapshot(tax_text, charges_text):
+    tax_clean = _strip_html_to_text(tax_text)
+    charges_clean = _strip_html_to_text(charges_text)
+
+    def pick_pct(text, label, default=None):
+        m = re.search(rf"{label}.{{0,90}}?(\d+(?:\.\d+)?)\s*%", text, re.IGNORECASE)
+        return parse_float(m.group(1), default) if m else default
+
+    def pick_tax_pct(text, label, default=None):
+        vals = [
+            parse_float(x, 0.0)
+            for x in re.findall(rf"{label}.{{0,140}}?(\d+(?:\.\d+)?)\s*%", text, re.IGNORECASE)
+        ]
+        vals = [v for v in vals if 0 < v <= 50]
+        return (max(vals) if vals else default)
+
+    def pick_money(text, pattern, default=None):
+        m = re.search(pattern, text, re.IGNORECASE)
+        if not m:
+            return default
+        raw_source = m.group(1) if (m.lastindex or 0) >= 1 else m.group(0)
+        raw_text = str(raw_source or "")
+        raw = re.sub(r"[^\d.]", "", raw_text)
+        value = parse_float(raw, default)
+        if "lakh" in raw_text.lower() and value > 0:
+            value *= 100000.0
+        return value
+
+    stcg_pct = pick_tax_pct(tax_clean, "STCG", None)
+    ltcg_pct = pick_tax_pct(tax_clean, "LTCG", None)
+    exemption_limit = pick_money(
+        tax_clean,
+        r"(?:1\.25\s*lakh|1,25,000|125000)",
+        125000.0,
+    )
+    if exemption_limit <= 0:
+        exemption_limit = 125000.0
+    nse_txn_pct = pick_pct(charges_clean, r"NSE:\s*", None)
+    bse_txn_pct = pick_pct(charges_clean, r"BSE:\s*", None)
+    stt_pct = pick_pct(charges_clean, r"STT/CTT.{0,80}?equity delivery.{0,80}?", None)
+    if stt_pct is None:
+        stt_pct = pick_pct(charges_clean, r"0\.1% on buy and sell|0\.1% on buy & sell", 0.1)
+    stamp_pct = pick_pct(charges_clean, r"Stamp charges.{0,80}?buy side", None)
+    gst_pct = pick_pct(charges_clean, r"GST", None)
+    dp_charge = pick_money(charges_clean, r"₹\s*([\d.]+)\s*per scrip", 15.34)
+    if None in (stcg_pct, ltcg_pct, nse_txn_pct, bse_txn_pct, stt_pct, stamp_pct, gst_pct):
+        raise ValueError("tax_rate_source_parse_failed")
+    return {
+        "stcg_rate_pct": round(stcg_pct, 4),
+        "ltcg_rate_pct": round(ltcg_pct, 4),
+        "ltcg_exemption_limit": round(exemption_limit, 2),
+        "txn_rate_nse": round(nse_txn_pct / 100.0, 8),
+        "txn_rate_bse": round(bse_txn_pct / 100.0, 8),
+        "stt_delivery_rate": round(stt_pct / 100.0, 6),
+        "stamp_buy_rate": round(stamp_pct / 100.0, 6),
+        "gst_rate": round(gst_pct / 100.0, 6),
+        "dp_charge_sell_incl_gst": round(dp_charge, 2),
+    }
+
+
+def _insert_tax_rate_sync_run(conn, status, source_label, source_url=None, snapshot=None, detail=None, error=None):
+    snap = dict(snapshot or {})
+    conn.execute(
+        """
+        INSERT INTO tax_rate_sync_runs(
+          created_at, status, source_label, source_url, stcg_rate_pct, ltcg_rate_pct, ltcg_exemption_limit,
+          stt_delivery_rate, stamp_buy_rate, gst_rate, dp_charge_sell, detail, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            now_iso(),
+            str(status or "error"),
+            str(source_label or "tax_monitor"),
+            str(source_url or ""),
+            parse_float(snap.get("stcg_rate_pct"), 0.0) or None,
+            parse_float(snap.get("ltcg_rate_pct"), 0.0) or None,
+            parse_float(snap.get("ltcg_exemption_limit"), 0.0) or None,
+            parse_float(snap.get("stt_delivery_rate"), 0.0) or None,
+            parse_float(snap.get("stamp_buy_rate"), 0.0) or None,
+            parse_float(snap.get("gst_rate"), 0.0) or None,
+            parse_float(snap.get("dp_charge_sell_incl_gst"), 0.0) or None,
+            str(detail or ""),
+            str(error or ""),
+        ),
+    )
+
+
+def upsert_attention_alert(conn, code, category, severity_rank, severity_label, title, detail="", source_ref="", meta=None):
+    code_s = str(code or "").strip().upper()
+    if not code_s:
+        raise ValueError("attention_code_required")
+    row = conn.execute("SELECT id, occurrence_count FROM attention_alerts WHERE code = ?", (code_s,)).fetchone()
+    stamp = now_iso()
+    meta_json = _safe_json_dumps(meta or {})
+    if row:
+        conn.execute(
+            """
+            UPDATE attention_alerts
+            SET category = ?, severity_rank = ?, severity_label = ?, status = 'open', title = ?, detail = ?,
+                source_ref = ?, last_seen_at = ?, resolved_at = NULL, meta_json = ?, occurrence_count = COALESCE(occurrence_count, 0) + 1
+            WHERE code = ?
+            """,
+            (
+                str(category or "system"),
+                int(severity_rank),
+                str(severity_label or "info"),
+                str(title or code_s),
+                str(detail or ""),
+                str(source_ref or ""),
+                stamp,
+                meta_json,
+                code_s,
+            ),
+        )
+        return code_s
+    conn.execute(
+        """
+        INSERT INTO attention_alerts(
+          code, category, severity_rank, severity_label, status, title, detail, source_ref, detected_at,
+          last_seen_at, resolved_at, meta_json, occurrence_count
+        ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, NULL, ?, 1)
+        """,
+        (
+            code_s,
+            str(category or "system"),
+            int(severity_rank),
+            str(severity_label or "info"),
+            str(title or code_s),
+            str(detail or ""),
+            str(source_ref or ""),
+            stamp,
+            stamp,
+            meta_json,
+        ),
+    )
+    return code_s
+
+
+def resolve_attention_alert(conn, code, detail=None):
+    code_s = str(code or "").strip().upper()
+    if not code_s:
+        return
+    row = conn.execute("SELECT id, status, detail FROM attention_alerts WHERE code = ?", (code_s,)).fetchone()
+    if not row or str(row["status"] or "").lower() == "resolved":
+        return
+    resolved_detail = str(detail if detail is not None else row["detail"] or "")
+    conn.execute(
+        """
+        UPDATE attention_alerts
+        SET status='resolved', detail=?, resolved_at=?, last_seen_at=?
+        WHERE code = ?
+        """,
+        (resolved_detail, now_iso(), now_iso(), code_s),
+    )
+
+
+def list_attention_alerts(conn, status=None, limit=80):
+    lim = max(1, min(300, int(limit)))
+    sql = "SELECT * FROM attention_alerts"
+    params = []
+    if status:
+        sql += " WHERE LOWER(status) = ?"
+        params.append(str(status).strip().lower())
+    sql += " ORDER BY CASE WHEN LOWER(status)='open' THEN 0 ELSE 1 END, severity_rank DESC, last_seen_at DESC, id DESC LIMIT ?"
+    params.append(lim)
+    rows = conn.execute(sql, params).fetchall()
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["meta"] = _safe_json_loads(item.get("meta_json"), {})
+        out.append(item)
+    return out
+
+
+def list_tax_rate_sync_runs(conn, limit=20):
+    lim = max(1, min(120, int(limit)))
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM tax_rate_sync_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (lim,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def open_lot_tax_bucket_summary(conn, symbol, ltp=None, as_of_date=None, split_map=None):
@@ -9508,6 +10881,1922 @@ def reset_active_rebalance_lot(conn):
         (now_iso(), lot_id),
     )
     return {"ok": True, "lot_id": lot_id, "status": "reset", "reset_at": now_iso()}
+
+
+def _normalize_daily_target_pair_state(raw, default="pending"):
+    state = str(raw or default or "pending").strip().lower()
+    if state == "done":
+        state = "executed"
+    allowed = {"pending", "sell_done", "buy_done", "executed", "skipped", "replaced"}
+    if state not in allowed:
+        raise ValueError("invalid_daily_target_pair_state")
+    return state
+
+
+def get_active_daily_target_plan(conn):
+    row = conn.execute(
+        """
+        SELECT id, seed_capital, target_profit_pct, target_profit_value, top_n, status, created_at, updated_at,
+               last_recalibrated_at, closed_at, notes
+        FROM daily_target_plans
+        WHERE LOWER(status) = 'active'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _daily_target_guard_map(conn):
+    return {
+        symbol_upper(r["symbol"]): {
+            "min_value": round(parse_float(r["min_value"], 0.0), 2),
+            "max_value": (
+                None if r["max_value"] is None or str(r["max_value"]).strip() == "" else round(parse_float(r["max_value"], 0.0), 2)
+            ),
+        }
+        for r in conn.execute("SELECT symbol, min_value, max_value FROM scrip_position_guards").fetchall()
+    }
+
+
+def _daily_target_pair_progress(buy_ref_price, current_buy_ref_price, buy_target_exit_price):
+    entry = parse_float(buy_ref_price, 0.0)
+    current = parse_float(current_buy_ref_price, 0.0)
+    target = parse_float(buy_target_exit_price, 0.0)
+    denom = target - entry
+    if entry <= 0 or current <= 0 or target <= 0 or abs(denom) <= 1e-9:
+        return 0.0
+    return round(clamp(((current - entry) / denom) * 100.0, -250.0, 250.0), 2)
+
+
+def _daily_target_live_pair_metrics(conn, pair_like, target_profit_pct=None):
+    row = dict(pair_like or {})
+    sell_symbol = symbol_upper(row.get("sell_symbol"))
+    buy_symbol = symbol_upper(row.get("buy_symbol"))
+    current_sell = parse_float(row.get("current_sell_ref_price"), parse_float(row.get("sell_ref_price"), 0.0))
+    current_buy = parse_float(row.get("current_buy_ref_price"), parse_float(row.get("buy_ref_price"), 0.0))
+    sell_ltp = get_effective_ltp(conn, sell_symbol) if sell_symbol else 0.0
+    buy_ltp = get_effective_ltp(conn, buy_symbol) if buy_symbol else 0.0
+    if sell_ltp > 0:
+        current_sell = round(sell_ltp, 4)
+    if buy_ltp > 0:
+        current_buy = round(buy_ltp, 4)
+    target_pct = round(
+        parse_float(
+            target_profit_pct,
+            row.get("target_profit_pct"),
+        ),
+        2,
+    )
+    if target_pct <= 0:
+        target_pct = 1.0
+    buy_entry = parse_float(row.get("executed_buy_price"), 0.0)
+    if buy_entry <= 0:
+        buy_entry = parse_float(row.get("buy_ref_price"), 0.0)
+    target_exit = parse_float(row.get("buy_target_exit_price"), 0.0)
+    original_buy_ref = parse_float(row.get("buy_ref_price"), 0.0)
+    if buy_entry > 0 and target_exit > 0 and original_buy_ref > 0:
+        if parse_float(row.get("executed_buy_price"), 0.0) > 0:
+            target_exit = round(buy_entry * (target_exit / max(original_buy_ref, 1e-9)), 4)
+    elif buy_entry > 0:
+        target_exit = round(buy_entry * (1.0 + (target_pct / 100.0)), 4)
+    progress = _daily_target_pair_progress(buy_entry, current_buy, target_exit)
+    return {
+        "current_sell_ref_price": round(current_sell, 4),
+        "current_buy_ref_price": round(current_buy, 4),
+        "buy_entry_price": round(buy_entry, 4),
+        "buy_target_exit_price": round(target_exit, 4),
+        "target_progress_pct": round(progress, 2),
+    }
+
+
+def _daily_target_build_buy_leg(buy_candidate, available_capital, target_profit_pct=1.0, required_net_profit=None, tax_cfg=None):
+    cand = dict(buy_candidate or {})
+    cfg = dict(tax_cfg or {})
+    capital = max(0.0, round(parse_float(available_capital, 0.0), 2))
+    ltp = round(parse_float(cand.get("ltp"), 0.0), 4)
+    if capital <= 0 or ltp <= 0:
+        return None
+    capacity = max(0.0, parse_float(cand.get("buy_capacity"), 0.0))
+    capital = min(capital, capacity if capacity > 0 else capital)
+    qty = math.floor((capital / max(1e-9, ltp)) + 1e-9)
+    if qty <= 0:
+        return None
+    buy_value = round(qty * ltp, 2)
+    exchange = str(cand.get("exchange") or "NSE").upper()
+    buy_entry_costs = _daily_target_zerodha_delivery_costs(buy_value, exchange=exchange, side="BUY", include_dp_on_sell=False, tax_cfg=cfg)
+    target_pct = max(0.1, parse_float(target_profit_pct, 1.0))
+    required_net = round(
+        parse_float(required_net_profit, 0.0),
+        2,
+    )
+    if required_net <= 0:
+        required_net = round((buy_value * target_pct) / 100.0, 2)
+    target_exit_price, target_exit_stats = _daily_target_required_exit_price_for_net_goal(
+        qty,
+        ltp,
+        required_net,
+        exchange=exchange,
+        tax_cfg=cfg,
+    )
+    expected_profit_value = round(parse_float(target_exit_stats.get("net_profit"), 0.0), 2)
+    buy_tax_bits = [
+        f"entry cost {money(buy_entry_costs.get('total'))}",
+        f"future STCG {money(target_exit_stats.get('future_tax_total'))}",
+        f"net target {money(expected_profit_value)}",
+    ]
+    return {
+        "buy_symbol": symbol_upper(cand.get("symbol")),
+        "buy_qty": round(qty, 4),
+        "buy_ref_price": ltp,
+        "buy_trade_value": buy_value,
+        "buy_target_exit_price": round(target_exit_price, 4),
+        "buy_score": round(parse_float(cand.get("buy_score"), 0.0), 4),
+        "buy_reason": f"{str(cand.get('reason') or '').strip()}, {'; '.join(buy_tax_bits)}",
+        "expected_profit_value": expected_profit_value,
+        "current_buy_ref_price": ltp,
+        "buy_exchange": exchange,
+        "buy_entry_cost_total": round(parse_float(buy_entry_costs.get("total"), 0.0), 2),
+        "buy_exit_cost_total": round(parse_float(target_exit_stats.get("exit_cost_total"), 0.0), 2),
+        "buy_exit_tax_total": round(parse_float(target_exit_stats.get("future_tax_total"), 0.0), 2),
+        "required_buy_leg_net_profit": required_net,
+    }
+
+
+def _daily_target_should_switch_pipeline_buy(current_row, proposed_buy_leg, buy_candidate_map):
+    if not current_row or not proposed_buy_leg:
+        return False
+    current_symbol = symbol_upper(current_row.get("buy_symbol"))
+    proposed_symbol = symbol_upper(proposed_buy_leg.get("buy_symbol"))
+    if not proposed_symbol:
+        return False
+    if current_symbol != proposed_symbol:
+        current_candidate = dict(buy_candidate_map.get(current_symbol) or {})
+        current_score = parse_float(current_candidate.get("buy_score"), current_row.get("buy_score"))
+        proposed_score = parse_float(proposed_buy_leg.get("buy_score"), 0.0)
+        current_ltp = parse_float(current_row.get("current_buy_ref_price"), current_row.get("buy_ref_price"))
+        proposed_ltp = parse_float(proposed_buy_leg.get("buy_ref_price"), 0.0)
+        if current_symbol not in buy_candidate_map:
+            return True
+        if proposed_score >= (current_score + 1.25):
+            return True
+        if current_score <= 0 < proposed_score:
+            return True
+        if proposed_ltp > 0 and current_ltp > 0 and proposed_ltp <= (current_ltp * 0.985):
+            return True
+        return False
+    current_qty = round(parse_float(current_row.get("buy_qty"), 0.0), 4)
+    proposed_qty = round(parse_float(proposed_buy_leg.get("buy_qty"), 0.0), 4)
+    current_ref = round(parse_float(current_row.get("buy_ref_price"), 0.0), 4)
+    proposed_ref = round(parse_float(proposed_buy_leg.get("buy_ref_price"), 0.0), 4)
+    current_value = round(parse_float(current_row.get("buy_trade_value"), 0.0), 2)
+    proposed_value = round(parse_float(proposed_buy_leg.get("buy_trade_value"), 0.0), 2)
+    return (
+        abs(current_qty - proposed_qty) > 1e-9
+        or abs(current_ref - proposed_ref) > 1e-9
+        or abs(current_value - proposed_value) > 0.01
+    )
+
+
+DAILY_TARGET_USER_TAX_BRACKET_PCT = 30.0
+DAILY_TARGET_EQUITY_STCG_TAX_PCT = 20.0
+DAILY_TARGET_EQUITY_LTCG_TAX_PCT = 12.5
+DAILY_TARGET_LTCG_EXEMPTION_LIMIT = 125000.0
+DAILY_TARGET_ZERODHA_EQ_DELIVERY_TXN_RATE = {"NSE": 0.0000307, "BSE": 0.0000375}
+DAILY_TARGET_ZERODHA_SEBI_RATE = 0.000001
+DAILY_TARGET_ZERODHA_STT_DELIVERY_RATE = 0.001
+DAILY_TARGET_ZERODHA_STAMP_BUY_RATE = 0.00015
+DAILY_TARGET_ZERODHA_GST_RATE = 0.18
+DAILY_TARGET_ZERODHA_DP_CHARGE_SELL_INCL_GST = 15.34
+
+
+def _daily_target_stt_round(value):
+    v = max(0.0, parse_float(value, 0.0))
+    return float(math.floor(v + 0.5))
+
+
+def _daily_target_equity_tax_rate(bucket, tax_cfg=None):
+    cfg = dict(tax_cfg or {})
+    if str(bucket or "").upper() == "LTCG":
+        return parse_float(cfg.get("ltcg_rate_pct"), DAILY_TARGET_EQUITY_LTCG_TAX_PCT) / 100.0
+    return parse_float(cfg.get("stcg_rate_pct"), DAILY_TARGET_EQUITY_STCG_TAX_PCT) / 100.0
+
+
+def _daily_target_zerodha_delivery_costs(order_value, exchange="NSE", side="BUY", include_dp_on_sell=False, tax_cfg=None):
+    cfg = dict(tax_cfg or {})
+    value = max(0.0, round(parse_float(order_value, 0.0), 2))
+    ex = str(exchange or "NSE").strip().upper()
+    txn_rate_map = {
+        "NSE": parse_float(cfg.get("txn_rate_nse"), DAILY_TARGET_ZERODHA_EQ_DELIVERY_TXN_RATE["NSE"]),
+        "BSE": parse_float(cfg.get("txn_rate_bse"), DAILY_TARGET_ZERODHA_EQ_DELIVERY_TXN_RATE["BSE"]),
+    }
+    txn_rate = txn_rate_map.get(ex, txn_rate_map["NSE"])
+    txn = value * txn_rate
+    sebi = value * parse_float(cfg.get("sebi_rate"), DAILY_TARGET_ZERODHA_SEBI_RATE)
+    brokerage = 0.0
+    gst = (brokerage + txn + sebi) * parse_float(cfg.get("gst_rate"), DAILY_TARGET_ZERODHA_GST_RATE)
+    stt = _daily_target_stt_round(value * parse_float(cfg.get("stt_delivery_rate"), DAILY_TARGET_ZERODHA_STT_DELIVERY_RATE))
+    stamp = value * parse_float(cfg.get("stamp_buy_rate"), DAILY_TARGET_ZERODHA_STAMP_BUY_RATE) if str(side or "BUY").strip().upper() == "BUY" else 0.0
+    dp = parse_float(cfg.get("dp_charge_sell_incl_gst"), DAILY_TARGET_ZERODHA_DP_CHARGE_SELL_INCL_GST) if include_dp_on_sell and str(side or "BUY").strip().upper() == "SELL" else 0.0
+    total = round(brokerage + txn + sebi + gst + stt + stamp + dp, 2)
+    return {
+        "exchange": ex,
+        "side": str(side or "BUY").strip().upper(),
+        "brokerage": round(brokerage, 2),
+        "transaction_charges": round(txn, 2),
+        "sebi_charges": round(sebi, 2),
+        "gst": round(gst, 2),
+        "stt": round(stt, 2),
+        "stamp": round(stamp, 2),
+        "dp_charges": round(dp, 2),
+        "total": total,
+    }
+
+
+def _daily_target_estimate_sell_tax_profile(conn, symbol, sell_qty, sell_price, split_map=None, as_of_date=None, tax_cfg=None, realized_tax_summary=None):
+    cfg = dict(tax_cfg or get_tax_profile_config(conn))
+    qty_req = max(0.0, parse_float(sell_qty, 0.0))
+    px = max(0.0, parse_float(sell_price, 0.0))
+    if qty_req <= 0 or px <= 0:
+        return {
+            "matched_qty": 0.0,
+            "stcg_gain": 0.0,
+            "ltcg_gain": 0.0,
+            "stcg_loss": 0.0,
+            "ltcg_loss": 0.0,
+            "tax_payable": 0.0,
+            "tax_relief": 0.0,
+            "tax_drag": 0.0,
+            "tax_bucket_mix": "NA",
+            "fy_label": _india_fy_bounds(as_of_date=as_of_date).get("fy_label"),
+            "ltcg_remaining_exemption_before": round(parse_float(cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT), 2),
+            "ltcg_exemption_used": 0.0,
+            "ltcg_taxable_gain_after_exemption": 0.0,
+        }
+    lots = open_lots_for_symbol(conn, symbol, split_map=split_map)
+    realized = dict(realized_tax_summary or compute_realized_equity_tax_summary(conn, as_of_date=as_of_date))
+    remaining = qty_req
+    stcg_gain = 0.0
+    ltcg_gain = 0.0
+    stcg_loss = 0.0
+    ltcg_loss = 0.0
+    matched_qty = 0.0
+    buckets_seen = set()
+    for lot in lots:
+        if remaining <= 1e-9:
+            break
+        q = min(remaining, parse_float(lot.get("qty"), 0.0))
+        if q <= 0:
+            continue
+        bucket, _held_days = _harvest_tax_bucket(lot.get("buy_date"), as_of_date=as_of_date)
+        pnl = (px - parse_float(lot.get("buy_price"), 0.0)) * q
+        matched_qty += q
+        buckets_seen.add(bucket)
+        if pnl >= 0:
+            if bucket == "LTCG":
+                ltcg_gain += pnl
+            else:
+                stcg_gain += pnl
+        else:
+            if bucket == "LTCG":
+                ltcg_loss += abs(pnl)
+            else:
+                stcg_loss += abs(pnl)
+        remaining -= q
+    stcg_net_gain = max(0.0, stcg_gain - stcg_loss)
+    stcg_net_loss = max(0.0, stcg_loss - stcg_gain)
+    ltcg_net_gain_before_exemption = max(0.0, ltcg_gain - ltcg_loss)
+    ltcg_net_loss = max(0.0, ltcg_loss - ltcg_gain)
+    ltcg_remaining_exemption_before = max(0.0, parse_float(realized.get("ltcg_remaining_exemption"), parse_float(cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT)))
+    ltcg_exemption_used = min(ltcg_remaining_exemption_before, ltcg_net_gain_before_exemption)
+    ltcg_taxable_gain_after_exemption = max(0.0, ltcg_net_gain_before_exemption - ltcg_exemption_used)
+    tax_payable = (
+        stcg_net_gain * _daily_target_equity_tax_rate("STCG", cfg)
+        + ltcg_taxable_gain_after_exemption * _daily_target_equity_tax_rate("LTCG", cfg)
+    )
+    tax_relief = (
+        stcg_net_loss * _daily_target_equity_tax_rate("STCG", cfg)
+        + ltcg_net_loss * _daily_target_equity_tax_rate("LTCG", cfg)
+    )
+    bucket_mix = "MIXED" if len(buckets_seen) > 1 else (next(iter(buckets_seen)) if buckets_seen else "NA")
+    return {
+        "matched_qty": round(matched_qty, 4),
+        "stcg_gain": round(stcg_gain, 2),
+        "ltcg_gain": round(ltcg_gain, 2),
+        "stcg_loss": round(stcg_loss, 2),
+        "ltcg_loss": round(ltcg_loss, 2),
+        "tax_payable": round(tax_payable, 2),
+        "tax_relief": round(tax_relief, 2),
+        "tax_drag": round(tax_payable - tax_relief, 2),
+        "tax_bucket_mix": bucket_mix,
+        "stcg_net_gain": round(stcg_net_gain, 2),
+        "stcg_net_loss": round(stcg_net_loss, 2),
+        "ltcg_net_gain_before_exemption": round(ltcg_net_gain_before_exemption, 2),
+        "ltcg_net_loss": round(ltcg_net_loss, 2),
+        "ltcg_remaining_exemption_before": round(ltcg_remaining_exemption_before, 2),
+        "ltcg_exemption_used": round(ltcg_exemption_used, 2),
+        "ltcg_taxable_gain_after_exemption": round(ltcg_taxable_gain_after_exemption, 2),
+        "fy_label": str(realized.get("fy_label") or ""),
+    }
+
+
+def _daily_target_buy_leg_net_profit_at_exit(buy_qty, buy_price, exit_price, exchange="NSE", tax_cfg=None):
+    cfg = dict(tax_cfg or {})
+    qty = max(0.0, parse_float(buy_qty, 0.0))
+    entry_px = max(0.0, parse_float(buy_price, 0.0))
+    exit_px = max(0.0, parse_float(exit_price, 0.0))
+    if qty <= 0 or entry_px <= 0 or exit_px <= 0:
+        return {
+            "gross_profit": 0.0,
+            "entry_cost_total": 0.0,
+            "exit_cost_total": 0.0,
+            "future_tax_total": 0.0,
+            "net_profit": 0.0,
+        }
+    buy_value = round(qty * entry_px, 2)
+    sell_value = round(qty * exit_px, 2)
+    entry_costs = _daily_target_zerodha_delivery_costs(buy_value, exchange=exchange, side="BUY", include_dp_on_sell=False, tax_cfg=cfg)
+    exit_costs = _daily_target_zerodha_delivery_costs(sell_value, exchange=exchange, side="SELL", include_dp_on_sell=True, tax_cfg=cfg)
+    gross_profit = round(sell_value - buy_value, 2)
+    future_tax_total = round(max(0.0, gross_profit) * _daily_target_equity_tax_rate("STCG", cfg), 2)
+    net_profit = round(gross_profit - parse_float(entry_costs.get("total"), 0.0) - parse_float(exit_costs.get("total"), 0.0) - future_tax_total, 2)
+    return {
+        "gross_profit": gross_profit,
+        "entry_cost_total": round(parse_float(entry_costs.get("total"), 0.0), 2),
+        "exit_cost_total": round(parse_float(exit_costs.get("total"), 0.0), 2),
+        "future_tax_total": future_tax_total,
+        "net_profit": net_profit,
+    }
+
+
+def _daily_target_required_exit_price_for_net_goal(buy_qty, buy_price, required_net_profit, exchange="NSE", tax_cfg=None):
+    qty = max(0.0, parse_float(buy_qty, 0.0))
+    entry_px = max(0.0, parse_float(buy_price, 0.0))
+    required = round(parse_float(required_net_profit, 0.0), 2)
+    if qty <= 0 or entry_px <= 0:
+        return round(entry_px, 4), _daily_target_buy_leg_net_profit_at_exit(qty, entry_px, entry_px, exchange=exchange, tax_cfg=tax_cfg)
+    if required <= 0:
+        return round(entry_px, 4), _daily_target_buy_leg_net_profit_at_exit(qty, entry_px, entry_px, exchange=exchange, tax_cfg=tax_cfg)
+    lo = entry_px
+    hi = max(entry_px * 1.03, entry_px + (required / max(qty, 1e-9)) * 3.0 + 1.0)
+    probe = _daily_target_buy_leg_net_profit_at_exit(qty, entry_px, hi, exchange=exchange, tax_cfg=tax_cfg)
+    for _ in range(24):
+        if parse_float(probe.get("net_profit"), 0.0) >= required:
+            break
+        hi *= 1.12
+        probe = _daily_target_buy_leg_net_profit_at_exit(qty, entry_px, hi, exchange=exchange, tax_cfg=tax_cfg)
+    best = probe
+    for _ in range(26):
+        mid = (lo + hi) / 2.0
+        estimate = _daily_target_buy_leg_net_profit_at_exit(qty, entry_px, mid, exchange=exchange, tax_cfg=tax_cfg)
+        if parse_float(estimate.get("net_profit"), 0.0) >= required:
+            hi = mid
+            best = estimate
+        else:
+            lo = mid
+    return round(hi, 4), best
+
+
+def _daily_target_trade_match(conn, symbol, side, exec_date, qty, price, exclude_ids=None):
+    sym = symbol_upper(symbol)
+    side_u = str(side or "").strip().upper()
+    d = str(exec_date or "").strip()[:10]
+    q = parse_float(qty, 0.0)
+    p = parse_float(price, 0.0)
+    if not sym or side_u not in ("BUY", "SELL") or not d or q <= 0:
+        return None
+    rows = conn.execute(
+        """
+        SELECT id, symbol, side, trade_date, quantity, price
+        FROM trades
+        WHERE UPPER(symbol) = ?
+          AND UPPER(side) = ?
+          AND trade_date = ?
+        ORDER BY id DESC
+        """,
+        (sym, side_u, d),
+    ).fetchall()
+    blocked = {int(parse_float(x, 0.0)) for x in (exclude_ids or []) if int(parse_float(x, 0.0)) > 0}
+    best = None
+    for r in rows:
+        tid = int(parse_float(r["id"], 0.0))
+        if tid in blocked:
+            continue
+        q_gap = abs(parse_float(r["quantity"], 0.0) - q)
+        p_gap = abs(parse_float(r["price"], 0.0) - p) if p > 0 else 0.0
+        if q_gap > max(0.02, q * 0.02):
+            continue
+        score = (q_gap * 1000.0) + p_gap
+        if best is None or score < best[0]:
+            best = (
+                score,
+                {
+                    "trade_id": tid,
+                    "trade_date": str(r["trade_date"] or ""),
+                    "quantity": round(parse_float(r["quantity"], 0.0), 4),
+                    "price": round(parse_float(r["price"], 0.0), 4),
+                },
+            )
+    return best[1] if best else None
+
+
+def reconcile_daily_target_trade_links(conn, plan_id=None):
+    where = []
+    params = []
+    if plan_id is not None:
+        where.append("plan_id = ?")
+        params.append(int(parse_float(plan_id, 0.0)))
+    sql = "SELECT * FROM daily_target_plan_pairs"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_at DESC, id DESC"
+    rows = conn.execute(sql, params).fetchall()
+    used_trade_ids = set()
+    for r in rows:
+        pair_id = int(parse_float(r["id"], 0.0))
+        sell_match = None
+        buy_match = None
+        if str(r["executed_sell_at"] or "").strip():
+            sell_match = _daily_target_trade_match(
+                conn,
+                r["sell_symbol"],
+                "SELL",
+                r["executed_sell_at"],
+                r["sell_qty"],
+                r["executed_sell_price"],
+                exclude_ids=used_trade_ids,
+            )
+        if sell_match:
+            used_trade_ids.add(int(parse_float(sell_match.get("trade_id"), 0.0)))
+        if str(r["executed_buy_at"] or "").strip():
+            buy_match = _daily_target_trade_match(
+                conn,
+                r["buy_symbol"],
+                "BUY",
+                r["executed_buy_at"],
+                r["buy_qty"],
+                r["executed_buy_price"],
+                exclude_ids=used_trade_ids,
+            )
+        if buy_match:
+            used_trade_ids.add(int(parse_float(buy_match.get("trade_id"), 0.0)))
+        status = "unmatched"
+        if sell_match and buy_match:
+            status = "matched"
+        elif sell_match or buy_match:
+            status = "partial"
+        conn.execute(
+            """
+            UPDATE daily_target_plan_pairs
+            SET matched_sell_trade_id = ?, matched_buy_trade_id = ?, reconciliation_status = ?, updated_at = COALESCE(updated_at, ?)
+            WHERE id = ?
+            """,
+            (
+                int(parse_float((sell_match or {}).get("trade_id"), 0.0)) or None,
+                int(parse_float((buy_match or {}).get("trade_id"), 0.0)) or None,
+                status,
+                now_iso(),
+                pair_id,
+            ),
+        )
+
+
+def sync_daily_target_positions(conn, pair_id):
+    iid = int(parse_float(pair_id, 0.0))
+    row = conn.execute(
+        """
+        SELECT id, sell_symbol, sell_qty, buy_symbol, buy_qty, executed_sell_price, executed_sell_at,
+               executed_buy_price, executed_buy_at, state
+        FROM daily_target_plan_pairs
+        WHERE id = ?
+        """,
+        (iid,),
+    ).fetchone()
+    if not row:
+        return
+    state = str(row["state"] or "").strip().lower()
+    if state != "executed":
+        return
+    buy_qty = parse_float(row["buy_qty"], 0.0)
+    buy_price = parse_float(row["executed_buy_price"], 0.0)
+    buy_at = str(row["executed_buy_at"] or "").strip()
+    if buy_qty > 0 and buy_price > 0 and buy_at:
+        existing_open = conn.execute(
+            "SELECT id FROM daily_target_positions WHERE source_pair_id = ? AND LOWER(status) = 'open' ORDER BY id DESC LIMIT 1",
+            (iid,),
+        ).fetchone()
+        if existing_open:
+            conn.execute(
+                """
+                UPDATE daily_target_positions
+                SET symbol = ?, qty = ?, initial_qty = ?, closed_qty = 0, entry_price = ?, entry_value = ?, realized_profit = 0, entry_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    symbol_upper(row["buy_symbol"]),
+                    round(buy_qty, 4),
+                    round(buy_qty, 4),
+                    round(buy_price, 4),
+                    round(buy_qty * buy_price, 2),
+                    buy_at,
+                    now_iso(),
+                    int(parse_float(existing_open["id"], 0.0)),
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO daily_target_positions(
+                  source_pair_id, symbol, qty, initial_qty, closed_qty, entry_price, entry_value, realized_profit, entry_at, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, 0, ?, 'open', ?, ?)
+                """,
+                (
+                    iid,
+                    symbol_upper(row["buy_symbol"]),
+                    round(buy_qty, 4),
+                    round(buy_qty, 4),
+                    round(buy_price, 4),
+                    round(buy_qty * buy_price, 2),
+                    buy_at,
+                    now_iso(),
+                    now_iso(),
+                ),
+            )
+    sell_qty = parse_float(row["sell_qty"], 0.0)
+    sell_price = parse_float(row["executed_sell_price"], 0.0)
+    sell_at = str(row["executed_sell_at"] or "").strip()
+    sell_symbol = symbol_upper(row["sell_symbol"])
+    if sell_qty > 0 and sell_price > 0 and sell_at and sell_symbol:
+        remaining = sell_qty
+        open_positions = conn.execute(
+            """
+            SELECT id, qty
+                 , initial_qty, closed_qty, entry_price, realized_profit
+            FROM daily_target_positions
+            WHERE UPPER(symbol) = ? AND LOWER(status) = 'open' AND source_pair_id <> ?
+            ORDER BY entry_at ASC, id ASC
+            """,
+            (sell_symbol, iid),
+        ).fetchall()
+        for pos in open_positions:
+            if remaining <= 1e-9:
+                break
+            pos_id = int(parse_float(pos["id"], 0.0))
+            pos_qty = parse_float(pos["qty"], 0.0)
+            pos_entry_price = parse_float(pos["entry_price"], 0.0)
+            pos_closed_qty = parse_float(pos["closed_qty"], 0.0)
+            pos_realized = parse_float(pos["realized_profit"], 0.0)
+            if pos_qty <= 1e-9:
+                continue
+            close_qty = min(pos_qty, remaining)
+            realized_add = round((sell_price - pos_entry_price) * close_qty, 2) if pos_entry_price > 0 else 0.0
+            if pos_qty <= (remaining + 1e-9):
+                conn.execute(
+                    """
+                    UPDATE daily_target_positions
+                    SET qty = 0, closed_qty = ?, realized_profit = ?, exit_pair_id = ?, exit_price = ?, exit_value = ?, exit_at = ?, status = 'closed', updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        round(pos_closed_qty + close_qty, 4),
+                        round(pos_realized + realized_add, 2),
+                        iid,
+                        round(sell_price, 4),
+                        round(pos_qty * sell_price, 2),
+                        sell_at,
+                        now_iso(),
+                        pos_id,
+                    ),
+                )
+                remaining -= pos_qty
+            else:
+                conn.execute(
+                    """
+                    UPDATE daily_target_positions
+                    SET qty = ?, closed_qty = ?, realized_profit = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        round(pos_qty - remaining, 4),
+                        round(pos_closed_qty + close_qty, 4),
+                        round(pos_realized + realized_add, 2),
+                        now_iso(),
+                        pos_id,
+                    ),
+                )
+                remaining = 0.0
+
+
+def _daily_target_virtual_open_positions(conn):
+    rows = conn.execute(
+        """
+        SELECT p.symbol, SUM(p.qty) AS qty, AVG(p.entry_price) AS avg_entry_price
+        FROM daily_target_positions p
+        JOIN daily_target_plan_pairs dp ON dp.id = p.source_pair_id
+        WHERE LOWER(p.status) = 'open'
+          AND LOWER(COALESCE(dp.reconciliation_status,'')) <> 'matched'
+        GROUP BY p.symbol
+        ORDER BY p.symbol
+        """
+    ).fetchall()
+    out = {}
+    for r in rows:
+        sym = symbol_upper(r["symbol"])
+        qty = round(parse_float(r["qty"], 0.0), 4)
+        avg_entry = round(parse_float(r["avg_entry_price"], 0.0), 4)
+        if sym and qty > 0:
+            out[sym] = {"qty": qty, "avg_entry_price": avg_entry}
+    return out
+
+
+def compute_daily_target_performance(conn):
+    rows = conn.execute(
+        """
+        SELECT p.*, dp.created_at AS plan_created_at, dp.seed_capital, dp.target_profit_pct
+        FROM daily_target_plan_pairs p
+        JOIN daily_target_plans dp ON dp.id = p.plan_id
+        WHERE LOWER(dp.status) IN ('active','completed','reset')
+        ORDER BY COALESCE(p.executed_buy_at, p.executed_sell_at, p.updated_at) ASC, p.id ASC
+        """
+    ).fetchall()
+    if not rows:
+        return {
+            "starting_capital": 10000.0,
+            "current_compounded_capital": 10000.0,
+            "compounded_return_value": 0.0,
+            "compounded_return_pct": 0.0,
+            "realized_compounded_capital": 10000.0,
+            "realized_profit_value": 0.0,
+            "realized_profit_pct": 0.0,
+            "executed_rotation_count": 0,
+            "matched_rotation_count": 0,
+            "unmatched_rotation_count": 0,
+            "cumulative_sell_value": 0.0,
+            "cumulative_buy_value": 0.0,
+            "live_mtm_pnl": 0.0,
+            "live_mtm_return_pct": 0.0,
+            "latest_symbol": "",
+            "latest_trade_date": "",
+            "suggested_next_seed_capital": 10000.0,
+        }
+    starting_capital = round(parse_float(rows[0]["seed_capital"], 10000.0), 2)
+    cumulative_sell_value = 0.0
+    cumulative_buy_value = 0.0
+    executed_rotation_count = 0
+    matched_rotation_count = 0
+    unmatched_rotation_count = 0
+    latest_balance = starting_capital
+    latest_symbol = ""
+    latest_trade_date = ""
+    live_mtm_pnl = 0.0
+    live_mtm_return_pct = 0.0
+    live_mtm_basis_value = 0.0
+    latest_row = None
+    for r in rows:
+        state = str(r["state"] or "").strip().lower()
+        if state in ("replaced",):
+            continue
+        sell_value = round(parse_float(r["executed_sell_price"], 0.0) * parse_float(r["sell_qty"], 0.0), 2) if parse_float(r["executed_sell_price"], 0.0) > 0 else round(parse_float(r["sell_trade_value"], 0.0), 2)
+        buy_cost = round(parse_float(r["executed_buy_price"], 0.0) * parse_float(r["buy_qty"], 0.0), 2) if parse_float(r["executed_buy_price"], 0.0) > 0 else round(parse_float(r["buy_trade_value"], 0.0), 2)
+        if sell_value > 0:
+            cumulative_sell_value += sell_value
+        if buy_cost > 0:
+            cumulative_buy_value += buy_cost
+        if state in ("sell_done", "buy_done", "executed"):
+            executed_rotation_count += 1
+            latest_row = r
+            latest_trade_date = str(r["executed_buy_at"] or r["executed_sell_at"] or r["updated_at"] or "")[:10]
+            latest_symbol = str(r["buy_symbol"] or "")
+            if str(r["reconciliation_status"] or "").strip().lower() == "matched":
+                matched_rotation_count += 1
+            else:
+                unmatched_rotation_count += 1
+    pos_rows = conn.execute(
+        """
+        SELECT symbol, qty, entry_value, realized_profit, status
+        FROM daily_target_positions
+        ORDER BY entry_at ASC, id ASC
+        """
+    ).fetchall()
+    realized_profit_value = round(sum(parse_float(r["realized_profit"], 0.0) for r in pos_rows), 2)
+    realized_compounded_capital = round(starting_capital + realized_profit_value, 2)
+    open_positions = conn.execute(
+        """
+        SELECT symbol, qty, entry_value
+        FROM daily_target_positions
+        WHERE LOWER(status) = 'open'
+        ORDER BY entry_at ASC, id ASC
+        """
+    ).fetchall()
+    if open_positions:
+        latest_balance = realized_compounded_capital
+        total_entry_value = 0.0
+        live_mtm_pnl = 0.0
+        for pos in open_positions:
+            px = get_effective_ltp(conn, pos["symbol"])
+            qty = parse_float(pos["qty"], 0.0)
+            current_value = round(qty * px, 2) if px > 0 and qty > 0 else round(parse_float(pos["entry_value"], 0.0), 2)
+            entry_value = round(parse_float(pos["entry_value"], 0.0), 2)
+            latest_balance += (current_value - entry_value)
+            live_mtm_pnl += round(current_value - entry_value, 2)
+            total_entry_value += round(parse_float(pos["entry_value"], 0.0), 2)
+        live_mtm_pnl = round(live_mtm_pnl, 2)
+        live_mtm_basis_value = round(total_entry_value, 2)
+        live_mtm_return_pct = round((live_mtm_pnl / total_entry_value) * 100.0, 2) if total_entry_value > 0 else 0.0
+    elif latest_row is None:
+        latest_balance = starting_capital
+    else:
+        latest_balance = realized_compounded_capital
+    compounded_return_value = round(latest_balance - starting_capital, 2)
+    compounded_return_pct = round((compounded_return_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0
+    return {
+        "starting_capital": round(starting_capital, 2),
+        "current_compounded_capital": round(latest_balance, 2),
+        "compounded_return_value": compounded_return_value,
+        "compounded_return_pct": compounded_return_pct,
+        "realized_compounded_capital": realized_compounded_capital,
+        "realized_profit_value": realized_profit_value,
+        "realized_profit_pct": round((realized_profit_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0,
+        "executed_rotation_count": executed_rotation_count,
+        "matched_rotation_count": matched_rotation_count,
+        "unmatched_rotation_count": unmatched_rotation_count,
+        "open_position_count": len(open_positions),
+        "cumulative_sell_value": round(cumulative_sell_value, 2),
+        "cumulative_buy_value": round(cumulative_buy_value, 2),
+        "live_mtm_pnl": round(live_mtm_pnl, 2),
+        "live_mtm_return_pct": round(live_mtm_return_pct, 2),
+        "live_mtm_basis_value": round(live_mtm_basis_value, 2),
+        "latest_symbol": latest_symbol,
+        "latest_trade_date": latest_trade_date,
+        "suggested_next_seed_capital": realized_compounded_capital,
+    }
+
+
+def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct=1.0, top_n=5):
+    seed = round(clamp(parse_float(seed_capital, 10000.0), 1000.0, 1_000_000_000.0), 2)
+    target_pct = round(clamp(parse_float(target_profit_pct, 1.0), 0.1, 25.0), 2)
+    limit = max(1, min(10, int(parse_float(top_n, 5))))
+    split_map = load_split_map(conn)
+    tax_cfg = get_tax_profile_config(conn)
+    realized_tax_summary = compute_realized_equity_tax_summary(conn)
+
+    cfg = get_intel_parameter_bundle(conn)
+    strategy_map = latest_strategy_recommendation_map(conn)
+    chart_map = latest_chart_snapshot_map(conn)
+    intel_map = build_intelligence_bias_map(
+        conn,
+        decay_days=int(cfg.get("decay_days", 45)),
+        w_commentary=parse_float(cfg.get("w_commentary"), 0.25),
+        w_policy=parse_float(cfg.get("w_policy"), 0.25),
+        w_financials=parse_float(cfg.get("w_financials"), 0.5),
+        w_chart=parse_float(cfg.get("w_chart"), 0.0),
+    )
+    guard_map = _daily_target_guard_map(conn)
+    virtual_open = _daily_target_virtual_open_positions(conn)
+    holdings = []
+    for item in collect_strategy_universe(conn, lookback_days=30):
+        symbol = symbol_upper(item.get("symbol"))
+        if not symbol:
+            continue
+        if symbol_upper(item.get("asset_class") or "EQUITY") == "GOLD":
+            continue
+        qty = parse_float(item.get("qty"), 0.0)
+        ltp = parse_float(item.get("ltp"), 0.0)
+        vrow = virtual_open.get(symbol)
+        if vrow and qty <= 0:
+            qty = parse_float(vrow.get("qty"), 0.0)
+            item["qty"] = qty
+            if parse_float(item.get("avg_cost"), 0.0) <= 0:
+                item["avg_cost"] = parse_float(vrow.get("avg_entry_price"), 0.0)
+            item["invested"] = round(qty * parse_float(item.get("avg_cost"), 0.0), 2)
+            item["market_value"] = round(qty * ltp, 2)
+        if qty <= 0 or ltp <= 0:
+            continue
+        market_value = max(parse_float(item.get("market_value"), 0.0), qty * ltp)
+        strat = strategy_map.get(symbol, {})
+        intel = intel_map.get(symbol, {})
+        chart = chart_map.get(symbol, {})
+        fin = financial_signal_for_symbol(conn, symbol)
+        action_bias = _harvest_action_bias(strat.get("action"))
+        signal_bias = _harvest_signal_bias(item.get("buy_signal"), item.get("sell_signal"))
+        expected_move_score = _harvest_expected_move_score(
+            parse_float(intel.get("score"), 0.0),
+            parse_float(chart.get("score"), 0.0),
+            parse_float(fin.get("score"), 0.0),
+            action_bias,
+            signal_bias,
+        )
+        direction = _harvest_direction_label(expected_move_score)
+        momentum = parse_float(item.get("momentum_lookback_pct"), 0.0)
+        total_return = parse_float(item.get("total_return_pct"), 0.0)
+        guards = guard_map.get(symbol, {})
+        min_value = parse_float(guards.get("min_value"), 0.0)
+        max_value = guards.get("max_value")
+        max_sell_value = max(0.0, market_value - max(0.0, min_value))
+        buy_capacity = (max(0.0, parse_float(max_value, 0.0) - market_value) if max_value not in (None, "") else seed * 3.0)
+        tax_rows = open_lot_tax_bucket_rows(conn, symbol, ltp=ltp, split_map=split_map)
+        stcg_loss_available = round(sum(max(0.0, -parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "STCG" and parse_float(x.get("unrealized_pnl"), 0.0) < 0), 2)
+        ltcg_loss_available = round(sum(max(0.0, -parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "LTCG" and parse_float(x.get("unrealized_pnl"), 0.0) < 0), 2)
+        stcg_gain_available = round(sum(max(0.0, parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "STCG" and parse_float(x.get("unrealized_pnl"), 0.0) > 0), 2)
+        ltcg_gain_available = round(sum(max(0.0, parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "LTCG" and parse_float(x.get("unrealized_pnl"), 0.0) > 0), 2)
+        tax_alpha_value = round(
+            (stcg_loss_available * _daily_target_equity_tax_rate("STCG", tax_cfg))
+            + (ltcg_loss_available * _daily_target_equity_tax_rate("LTCG", tax_cfg))
+            - (stcg_gain_available * _daily_target_equity_tax_rate("STCG", tax_cfg))
+            - (ltcg_gain_available * _daily_target_equity_tax_rate("LTCG", tax_cfg)),
+            2,
+        )
+        tax_alpha_score = round((tax_alpha_value / max(seed, 1.0)) * 500.0, 4)
+        sell_score = (
+            max(0.0, -expected_move_score)
+            + max(0.0, -momentum) * 0.4
+            + max(0.0, total_return) * 0.08
+            + (6.0 if direction == "DOWN" else (1.0 if direction == "MIXED" else 0.0))
+            + tax_alpha_score
+        )
+        buy_score = (
+            max(0.0, expected_move_score)
+            + max(0.0, momentum) * 0.4
+            + max(0.0, parse_float(intel.get("confidence"), 0.0)) * 10.0
+            + (6.0 if direction == "UP" else (1.0 if direction == "MIXED" else 0.0))
+        )
+        reason = _harvest_priority_reason(
+            direction,
+            strat.get("action"),
+            chart.get("signal"),
+            intel.get("summary"),
+            fin.get("summary"),
+        )
+        holdings.append(
+            {
+                "symbol": symbol,
+                "qty": round(qty, 4),
+                "ltp": round(ltp, 4),
+                "market_value": round(market_value, 2),
+                "max_sell_value": round(max_sell_value, 2),
+                "buy_capacity": round(buy_capacity, 2),
+                "sell_score": round(sell_score, 4),
+                "buy_score": round(buy_score, 4),
+                "expected_move_score": round(expected_move_score, 4),
+                "direction": direction,
+                "reason": reason,
+                "strategy_action": str(strat.get("action") or "").upper(),
+                "buy_signal": str(item.get("buy_signal") or "").upper(),
+                "sell_signal": str(item.get("sell_signal") or "").upper(),
+                "momentum_lookback_pct": round(momentum, 2),
+                "total_return_pct": round(total_return, 2),
+                "min_value": round(min_value, 2),
+                "max_value": None if max_value in (None, "") else round(parse_float(max_value, 0.0), 2),
+                "exchange": str(item.get("exchange") or "NSE").upper(),
+                "tax_alpha_value": round(tax_alpha_value, 2),
+                "tax_alpha_score": round(tax_alpha_score, 4),
+                "stcg_loss_available": stcg_loss_available,
+                "ltcg_loss_available": ltcg_loss_available,
+                "stcg_gain_available": stcg_gain_available,
+                "ltcg_gain_available": ltcg_gain_available,
+            }
+        )
+
+    sell_candidates = [
+        x for x in holdings if x["max_sell_value"] >= max(x["ltp"], min(seed * 0.25, x["market_value"]))
+    ]
+    buy_candidates = [
+        x for x in holdings if x["buy_capacity"] >= x["ltp"]
+    ]
+    sell_candidates.sort(key=lambda x: (x["sell_score"], x["market_value"]), reverse=True)
+    buy_candidates.sort(key=lambda x: (x["buy_score"], x["market_value"]), reverse=True)
+
+    pairs = []
+    used_sell = set()
+    used_buy = set()
+    used_symbols = set()
+    for sell in sell_candidates:
+        if sell["symbol"] in used_sell or sell["symbol"] in used_symbols:
+            continue
+        best = None
+        for buy in buy_candidates:
+            if buy["symbol"] == sell["symbol"] or buy["symbol"] in used_buy or buy["symbol"] in used_symbols or buy["symbol"] in used_sell:
+                continue
+            allocation = min(
+                seed,
+                parse_float(sell.get("max_sell_value"), 0.0),
+                parse_float(buy.get("buy_capacity"), 0.0),
+            )
+            if allocation <= 0:
+                continue
+            sell_qty = min(parse_float(sell.get("qty"), 0.0), math.floor((allocation / max(1e-9, sell["ltp"])) + 1e-9))
+            if sell_qty <= 0:
+                continue
+            sell_value = round(sell_qty * sell["ltp"], 2)
+            sell_costs = _daily_target_zerodha_delivery_costs(
+                sell_value,
+                exchange=sell.get("exchange"),
+                side="SELL",
+                include_dp_on_sell=True,
+                tax_cfg=tax_cfg,
+            )
+            sell_tax = _daily_target_estimate_sell_tax_profile(
+                conn,
+                sell["symbol"],
+                sell_qty,
+                sell["ltp"],
+                split_map=split_map,
+                tax_cfg=tax_cfg,
+                realized_tax_summary=realized_tax_summary,
+            )
+            redeployable_capital = max(0.0, round(sell_value - parse_float(sell_costs.get("total"), 0.0), 2))
+            buy_qty = math.floor((redeployable_capital / max(1e-9, buy["ltp"])) + 1e-9)
+            if buy_qty <= 0:
+                continue
+            buy_value = round(buy_qty * buy["ltp"], 2)
+            buy_entry_costs = _daily_target_zerodha_delivery_costs(
+                buy_value,
+                exchange=buy.get("exchange"),
+                side="BUY",
+                include_dp_on_sell=False,
+                tax_cfg=tax_cfg,
+            )
+            required_buy_leg_net = round(
+                max(
+                    0.0,
+                    ((buy_value * target_pct) / 100.0)
+                    + parse_float(sell_costs.get("total"), 0.0)
+                    + parse_float(sell_tax.get("tax_drag"), 0.0),
+                ),
+                2,
+            )
+            target_exit_price, target_exit_stats = _daily_target_required_exit_price_for_net_goal(
+                buy_qty,
+                buy["ltp"],
+                required_buy_leg_net,
+                exchange=buy.get("exchange"),
+                tax_cfg=tax_cfg,
+            )
+            expected_profit_value = round(
+                parse_float(target_exit_stats.get("net_profit"), 0.0)
+                - parse_float(sell_costs.get("total"), 0.0)
+                - parse_float(sell_tax.get("tax_drag"), 0.0),
+                2,
+            )
+            tax_alpha_score = round(
+                (
+                    parse_float(sell_tax.get("tax_relief"), 0.0)
+                    - parse_float(sell_tax.get("tax_payable"), 0.0)
+                    - parse_float(sell_costs.get("total"), 0.0)
+                    - parse_float(buy_entry_costs.get("total"), 0.0)
+                )
+                / max(seed, 1.0)
+                * 500.0,
+                4,
+            )
+            rotation_score = round(parse_float(sell.get("sell_score"), 0.0) + parse_float(buy.get("buy_score"), 0.0) + tax_alpha_score, 4)
+            sell_tax_bits = []
+            if parse_float(sell_tax.get("tax_relief"), 0.0) > 0:
+                sell_tax_bits.append(f"tax relief {money(sell_tax.get('tax_relief'))}")
+            if parse_float(sell_tax.get("tax_payable"), 0.0) > 0:
+                sell_tax_bits.append(f"tax drag {money(sell_tax.get('tax_payable'))}")
+            if parse_float(sell_tax.get("ltcg_exemption_used"), 0.0) > 0:
+                sell_tax_bits.append(f"LTCG exemption used {money(sell_tax.get('ltcg_exemption_used'))}")
+            if parse_float(sell_tax.get("ltcg_remaining_exemption_before"), 0.0) > 0:
+                sell_tax_bits.append(f"LTCG exemption left {money(max(0.0, parse_float(sell_tax.get('ltcg_remaining_exemption_before'), 0.0) - parse_float(sell_tax.get('ltcg_exemption_used'), 0.0)))}")
+            sell_tax_bits.append(f"cost {money(sell_costs.get('total'))}")
+            buy_tax_bits = [
+                f"entry cost {money(buy_entry_costs.get('total'))}",
+                f"future STCG {money(target_exit_stats.get('future_tax_total'))}",
+                f"net target {money(expected_profit_value)}",
+            ]
+            candidate = {
+                "sell_symbol": sell["symbol"],
+                "sell_qty": round(sell_qty, 4),
+                "sell_ref_price": round(sell["ltp"], 4),
+                "sell_trade_value": sell_value,
+                "sell_target_price": round(sell["ltp"], 4),
+                "sell_score": round(parse_float(sell.get("sell_score"), 0.0), 4),
+                "sell_reason": f"{sell['reason']}, {sell_tax.get('tax_bucket_mix')} bucket, {'; '.join(sell_tax_bits)}",
+                "buy_symbol": buy["symbol"],
+                "buy_qty": round(buy_qty, 4),
+                "buy_ref_price": round(buy["ltp"], 4),
+                "buy_trade_value": buy_value,
+                "buy_target_exit_price": round(target_exit_price, 4),
+                "buy_score": round(parse_float(buy.get("buy_score"), 0.0), 4),
+                "buy_reason": f"{buy['reason']}, {'; '.join(buy_tax_bits)}",
+                "expected_profit_value": expected_profit_value,
+                "rotation_score": rotation_score,
+                "current_sell_ref_price": round(sell["ltp"], 4),
+                "current_buy_ref_price": round(buy["ltp"], 4),
+                "target_progress_pct": 0.0,
+                "sell_exchange": str(sell.get("exchange") or "NSE").upper(),
+                "buy_exchange": str(buy.get("exchange") or "NSE").upper(),
+                "sell_cost_total": round(parse_float(sell_costs.get("total"), 0.0), 2),
+                "buy_entry_cost_total": round(parse_float(buy_entry_costs.get("total"), 0.0), 2),
+                "buy_exit_cost_total": round(parse_float(target_exit_stats.get("exit_cost_total"), 0.0), 2),
+                "buy_exit_tax_total": round(parse_float(target_exit_stats.get("future_tax_total"), 0.0), 2),
+                "sell_tax_payable": round(parse_float(sell_tax.get("tax_payable"), 0.0), 2),
+                "sell_tax_relief": round(parse_float(sell_tax.get("tax_relief"), 0.0), 2),
+                "sell_tax_drag": round(parse_float(sell_tax.get("tax_drag"), 0.0), 2),
+                "sell_tax_bucket_mix": str(sell_tax.get("tax_bucket_mix") or "NA"),
+                "net_target_profit_value": expected_profit_value,
+                "required_buy_leg_net_profit": required_buy_leg_net,
+                "tax_alpha_score": tax_alpha_score,
+                "fy_label": str(realized_tax_summary.get("fy_label") or ""),
+                "ltcg_remaining_exemption_before": round(parse_float(sell_tax.get("ltcg_remaining_exemption_before"), 0.0), 2),
+                "ltcg_exemption_used": round(parse_float(sell_tax.get("ltcg_exemption_used"), 0.0), 2),
+            }
+            if best is None or candidate["rotation_score"] > best["rotation_score"]:
+                best = candidate
+        if not best:
+            continue
+        pairs.append(best)
+        used_sell.add(best["sell_symbol"])
+        used_buy.add(best["buy_symbol"])
+        used_symbols.add(best["sell_symbol"])
+        used_symbols.add(best["buy_symbol"])
+        if len(pairs) >= limit:
+            break
+
+    for idx, pair in enumerate(pairs, start=1):
+        pair["priority_rank"] = idx
+        pair["target_progress_pct"] = _daily_target_pair_progress(
+            pair["buy_ref_price"], pair["current_buy_ref_price"], pair["buy_target_exit_price"]
+        )
+
+    return {
+        "summary": {
+            "seed_capital": seed,
+            "target_profit_pct": target_pct,
+            "target_profit_value": round((seed * target_pct) / 100.0, 2),
+            "top_n": limit,
+            "sell_candidate_count": len(sell_candidates),
+            "buy_candidate_count": len(buy_candidates),
+            "generated_pairs_count": len(pairs),
+            "universe_holdings_count": len(holdings),
+            "scope": "existing_non_zero_holdings_only",
+            "as_of": now_iso(),
+            "tax_mode": "equity_special_rates",
+            "investor_tax_bracket_pct": DAILY_TARGET_USER_TAX_BRACKET_PCT,
+            "equity_stcg_tax_pct": round(parse_float(tax_cfg.get("stcg_rate_pct"), DAILY_TARGET_EQUITY_STCG_TAX_PCT), 4),
+            "equity_ltcg_tax_pct": round(parse_float(tax_cfg.get("ltcg_rate_pct"), DAILY_TARGET_EQUITY_LTCG_TAX_PCT), 4),
+            "equity_ltcg_exemption_limit": round(parse_float(tax_cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT), 2),
+            "fy_label": str(realized_tax_summary.get("fy_label") or ""),
+            "fy_start_date": str(realized_tax_summary.get("fy_start_date") or ""),
+            "fy_end_date": str(realized_tax_summary.get("fy_end_date") or ""),
+            "realized_ltcg_net_gain": round(parse_float(realized_tax_summary.get("ltcg_net_gain"), 0.0), 2),
+            "remaining_ltcg_exemption": round(parse_float(realized_tax_summary.get("ltcg_remaining_exemption"), 0.0), 2),
+            "zerodha_cost_model": "equity_delivery",
+        },
+        "pairs": pairs,
+        "_holdings": holdings,
+        "_sell_candidates": sell_candidates,
+        "_buy_candidates": buy_candidates,
+    }
+
+
+def _insert_daily_target_pair_snapshot(conn, pair_id, snapshot_note="recalibrated"):
+    row = conn.execute(
+        """
+        SELECT id, plan_id, sell_ref_price, buy_ref_price, expected_profit_value, rotation_score, buy_target_exit_price
+        FROM daily_target_plan_pairs
+        WHERE id = ?
+        """,
+        (int(parse_float(pair_id, 0.0)),),
+    ).fetchone()
+    if not row:
+        return
+    conn.execute(
+        """
+        INSERT INTO daily_target_pair_snapshots(
+          plan_id, pair_id, captured_at, sell_ref_price, buy_ref_price, expected_profit_value, rotation_score,
+          buy_target_exit_price, snapshot_note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(parse_float(row["plan_id"], 0.0)),
+            int(parse_float(row["id"], 0.0)),
+            now_iso(),
+            round(parse_float(row["sell_ref_price"], 0.0), 4),
+            round(parse_float(row["buy_ref_price"], 0.0), 4),
+            round(parse_float(row["expected_profit_value"], 0.0), 2),
+            round(parse_float(row["rotation_score"], 0.0), 4),
+            round(parse_float(row["buy_target_exit_price"], 0.0), 4),
+            str(snapshot_note or "").strip() or None,
+        ),
+    )
+
+
+def _insert_daily_target_pair(conn, plan_id, pair, state="pending"):
+    ts = now_iso()
+    conn.execute(
+        """
+        INSERT INTO daily_target_plan_pairs(
+          plan_id, priority_rank, state, sell_symbol, sell_qty, sell_ref_price, sell_trade_value, sell_target_price,
+          sell_score, sell_reason, buy_symbol, buy_qty, buy_ref_price, buy_trade_value, buy_target_exit_price,
+          buy_score, buy_reason, expected_profit_value, rotation_score, current_sell_ref_price,
+          current_buy_ref_price, target_progress_pct, matched_sell_trade_id, matched_buy_trade_id, reconciliation_status,
+          created_at, updated_at, last_recalibrated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(parse_float(plan_id, 0.0)),
+            int(parse_float(pair.get("priority_rank"), 0.0)),
+            _normalize_daily_target_pair_state(state),
+            symbol_upper(pair.get("sell_symbol")),
+            round(parse_float(pair.get("sell_qty"), 0.0), 4),
+            round(parse_float(pair.get("sell_ref_price"), 0.0), 4),
+            round(parse_float(pair.get("sell_trade_value"), 0.0), 2),
+            round(parse_float(pair.get("sell_target_price"), 0.0), 4),
+            round(parse_float(pair.get("sell_score"), 0.0), 4),
+            str(pair.get("sell_reason") or "").strip() or None,
+            symbol_upper(pair.get("buy_symbol")),
+            round(parse_float(pair.get("buy_qty"), 0.0), 4),
+            round(parse_float(pair.get("buy_ref_price"), 0.0), 4),
+            round(parse_float(pair.get("buy_trade_value"), 0.0), 2),
+            round(parse_float(pair.get("buy_target_exit_price"), 0.0), 4),
+            round(parse_float(pair.get("buy_score"), 0.0), 4),
+            str(pair.get("buy_reason") or "").strip() or None,
+            round(parse_float(pair.get("expected_profit_value"), 0.0), 2),
+            round(parse_float(pair.get("rotation_score"), 0.0), 4),
+            round(parse_float(pair.get("current_sell_ref_price"), pair.get("sell_ref_price")), 4),
+            round(parse_float(pair.get("current_buy_ref_price"), pair.get("buy_ref_price")), 4),
+            round(parse_float(pair.get("target_progress_pct"), 0.0), 2),
+            None,
+            None,
+            "unmatched",
+            ts,
+            ts,
+            ts,
+        ),
+    )
+    pair_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    _insert_daily_target_pair_snapshot(conn, pair_id, snapshot_note="created")
+    return pair_id
+
+
+def _daily_target_plan_snapshots(conn, plan_id, limit=60):
+    rows = conn.execute(
+        """
+        SELECT s.id, s.captured_at, s.sell_ref_price, s.buy_ref_price, s.expected_profit_value, s.rotation_score,
+               s.buy_target_exit_price, s.snapshot_note, p.priority_rank, p.sell_symbol, p.buy_symbol, p.state
+        FROM daily_target_pair_snapshots s
+        JOIN daily_target_plan_pairs p ON p.id = s.pair_id
+        WHERE s.plan_id = ?
+        ORDER BY s.captured_at DESC, s.id DESC
+        LIMIT ?
+        """,
+        (int(parse_float(plan_id, 0.0)), max(1, min(300, int(parse_float(limit, 60))))),
+    ).fetchall()
+    return [
+        {
+            "snapshot_id": int(parse_float(r["id"], 0.0)),
+            "captured_at": str(r["captured_at"] or ""),
+            "priority_rank": int(parse_float(r["priority_rank"], 0.0)),
+            "sell_symbol": str(r["sell_symbol"] or ""),
+            "buy_symbol": str(r["buy_symbol"] or ""),
+            "state": str(r["state"] or ""),
+            "sell_ref_price": round(parse_float(r["sell_ref_price"], 0.0), 4),
+            "buy_ref_price": round(parse_float(r["buy_ref_price"], 0.0), 4),
+            "expected_profit_value": round(parse_float(r["expected_profit_value"], 0.0), 2),
+            "rotation_score": round(parse_float(r["rotation_score"], 0.0), 4),
+            "buy_target_exit_price": round(parse_float(r["buy_target_exit_price"], 0.0), 4),
+            "snapshot_note": str(r["snapshot_note"] or ""),
+        }
+        for r in rows
+    ]
+
+
+def _daily_target_plan_payload(conn, plan_row):
+    if not plan_row:
+        perf = compute_daily_target_performance(conn)
+        tax_cfg = get_tax_profile_config(conn)
+        realized_tax = compute_realized_equity_tax_summary(conn)
+        return {
+            "plan": None,
+            "summary": {
+                "seed_capital": 10000.0,
+                "target_profit_pct": 1.0,
+                "target_profit_value": 100.0,
+                "top_n": 5,
+                "pending_pairs": 0,
+                "executed_pairs": 0,
+                "sell_done_pairs": 0,
+                "buy_done_pairs": 0,
+                "skipped_pairs": 0,
+                "replaced_pairs": 0,
+                "projected_pending_profit": 0.0,
+                "suggested_next_seed_capital": round(parse_float(perf.get("suggested_next_seed_capital"), 10000.0), 2),
+                "tax_mode": "equity_special_rates",
+                "investor_tax_bracket_pct": DAILY_TARGET_USER_TAX_BRACKET_PCT,
+                "equity_stcg_tax_pct": round(parse_float(tax_cfg.get("stcg_rate_pct"), DAILY_TARGET_EQUITY_STCG_TAX_PCT), 4),
+                "equity_ltcg_tax_pct": round(parse_float(tax_cfg.get("ltcg_rate_pct"), DAILY_TARGET_EQUITY_LTCG_TAX_PCT), 4),
+                "equity_ltcg_exemption_limit": round(parse_float(tax_cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT), 2),
+                "fy_label": str(realized_tax.get("fy_label") or ""),
+                "fy_start_date": str(realized_tax.get("fy_start_date") or ""),
+                "fy_end_date": str(realized_tax.get("fy_end_date") or ""),
+                "realized_ltcg_net_gain": round(parse_float(realized_tax.get("ltcg_net_gain"), 0.0), 2),
+                "remaining_ltcg_exemption": round(parse_float(realized_tax.get("ltcg_remaining_exemption"), 0.0), 2),
+                "zerodha_cost_model": "equity_delivery",
+            },
+            "pairs": [],
+            "snapshots": [],
+            "performance": perf,
+        }
+    plan_id = int(parse_float(plan_row.get("id"), 0.0))
+    reconcile_daily_target_trade_links(conn, plan_id=plan_id)
+    pair_rows = conn.execute(
+        """
+        SELECT *
+        FROM daily_target_plan_pairs
+        WHERE plan_id = ?
+        ORDER BY priority_rank ASC, id ASC
+        """,
+        (plan_id,),
+    ).fetchall()
+    pairs = []
+    counts = defaultdict(int)
+    projected_pending_profit = 0.0
+    for r in pair_rows:
+        state = _normalize_daily_target_pair_state(r["state"], default="pending")
+        counts[state] += 1
+        if state == "pending":
+            projected_pending_profit += parse_float(r["expected_profit_value"], 0.0)
+        live = _daily_target_live_pair_metrics(conn, r, target_profit_pct=plan_row.get("target_profit_pct"))
+        pairs.append(
+            {
+                "pair_id": int(parse_float(r["id"], 0.0)),
+                "priority_rank": int(parse_float(r["priority_rank"], 0.0)),
+                "state": state,
+                "sell_symbol": str(r["sell_symbol"] or ""),
+                "sell_qty": round(parse_float(r["sell_qty"], 0.0), 4),
+                "sell_ref_price": round(parse_float(r["sell_ref_price"], 0.0), 4),
+                "sell_trade_value": round(parse_float(r["sell_trade_value"], 0.0), 2),
+                "sell_target_price": round(parse_float(r["sell_target_price"], 0.0), 4),
+                "sell_score": round(parse_float(r["sell_score"], 0.0), 4),
+                "sell_reason": str(r["sell_reason"] or ""),
+                "buy_symbol": str(r["buy_symbol"] or ""),
+                "buy_qty": round(parse_float(r["buy_qty"], 0.0), 4),
+                "buy_ref_price": round(parse_float(r["buy_ref_price"], 0.0), 4),
+                "buy_trade_value": round(parse_float(r["buy_trade_value"], 0.0), 2),
+                "buy_target_exit_price": round(parse_float(r["buy_target_exit_price"], 0.0), 4),
+                "buy_score": round(parse_float(r["buy_score"], 0.0), 4),
+                "buy_reason": str(r["buy_reason"] or ""),
+                "expected_profit_value": round(parse_float(r["expected_profit_value"], 0.0), 2),
+                "rotation_score": round(parse_float(r["rotation_score"], 0.0), 4),
+                "current_sell_ref_price": round(parse_float(live.get("current_sell_ref_price"), r["current_sell_ref_price"]), 4),
+                "current_buy_ref_price": round(parse_float(live.get("current_buy_ref_price"), r["current_buy_ref_price"]), 4),
+                "target_progress_pct": round(parse_float(live.get("target_progress_pct"), r["target_progress_pct"]), 2),
+                "matched_sell_trade_id": int(parse_float(r["matched_sell_trade_id"], 0.0)) or None,
+                "matched_buy_trade_id": int(parse_float(r["matched_buy_trade_id"], 0.0)) or None,
+                "reconciliation_status": str(r["reconciliation_status"] or "unmatched"),
+                "executed_sell_price": (
+                    None if r["executed_sell_price"] is None else round(parse_float(r["executed_sell_price"], 0.0), 4)
+                ),
+                "executed_sell_at": str(r["executed_sell_at"] or ""),
+                "executed_sell_value": round(parse_float(r["executed_sell_price"], 0.0) * parse_float(r["sell_qty"], 0.0), 2) if parse_float(r["executed_sell_price"], 0.0) > 0 else None,
+                "executed_buy_price": (
+                    None if r["executed_buy_price"] is None else round(parse_float(r["executed_buy_price"], 0.0), 4)
+                ),
+                "executed_buy_at": str(r["executed_buy_at"] or ""),
+                "executed_buy_value": round(parse_float(r["executed_buy_price"], 0.0) * parse_float(r["buy_qty"], 0.0), 2) if parse_float(r["executed_buy_price"], 0.0) > 0 else None,
+                "completion_note": str(r["completion_note"] or ""),
+                "created_at": str(r["created_at"] or ""),
+                "updated_at": str(r["updated_at"] or ""),
+                "last_recalibrated_at": str(r["last_recalibrated_at"] or ""),
+                "buy_entry_price": round(parse_float(live.get("buy_entry_price"), 0.0), 4),
+                "buy_target_exit_price": round(parse_float(live.get("buy_target_exit_price"), r["buy_target_exit_price"]), 4),
+            }
+        )
+    summary = {
+        "seed_capital": round(parse_float(plan_row.get("seed_capital"), 0.0), 2),
+        "target_profit_pct": round(parse_float(plan_row.get("target_profit_pct"), 0.0), 2),
+        "target_profit_value": round(parse_float(plan_row.get("target_profit_value"), 0.0), 2),
+        "top_n": int(parse_float(plan_row.get("top_n"), 0.0)),
+        "pending_pairs": counts.get("pending", 0),
+        "sell_done_pairs": counts.get("sell_done", 0),
+        "buy_done_pairs": counts.get("buy_done", 0),
+        "executed_pairs": counts.get("executed", 0),
+        "skipped_pairs": counts.get("skipped", 0),
+        "replaced_pairs": counts.get("replaced", 0),
+        "projected_pending_profit": round(projected_pending_profit, 2),
+        "created_at": str(plan_row.get("created_at") or ""),
+        "updated_at": str(plan_row.get("updated_at") or ""),
+        "last_recalibrated_at": str(plan_row.get("last_recalibrated_at") or ""),
+        "status": str(plan_row.get("status") or ""),
+        "tax_mode": "equity_special_rates",
+        "investor_tax_bracket_pct": DAILY_TARGET_USER_TAX_BRACKET_PCT,
+        "equity_stcg_tax_pct": round(parse_float(get_tax_profile_config(conn).get("stcg_rate_pct"), DAILY_TARGET_EQUITY_STCG_TAX_PCT), 4),
+        "equity_ltcg_tax_pct": round(parse_float(get_tax_profile_config(conn).get("ltcg_rate_pct"), DAILY_TARGET_EQUITY_LTCG_TAX_PCT), 4),
+        "equity_ltcg_exemption_limit": round(parse_float(get_tax_profile_config(conn).get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT), 2),
+        "zerodha_cost_model": "equity_delivery",
+    }
+    perf = compute_daily_target_performance(conn)
+    realized_tax = compute_realized_equity_tax_summary(conn)
+    summary["fy_label"] = str(realized_tax.get("fy_label") or "")
+    summary["fy_start_date"] = str(realized_tax.get("fy_start_date") or "")
+    summary["fy_end_date"] = str(realized_tax.get("fy_end_date") or "")
+    summary["realized_ltcg_net_gain"] = round(parse_float(realized_tax.get("ltcg_net_gain"), 0.0), 2)
+    summary["remaining_ltcg_exemption"] = round(parse_float(realized_tax.get("ltcg_remaining_exemption"), 0.0), 2)
+    summary["suggested_next_seed_capital"] = round(parse_float(perf.get("suggested_next_seed_capital"), summary["seed_capital"]), 2)
+    return {
+        "plan": {
+            "id": plan_id,
+            "seed_capital": summary["seed_capital"],
+            "target_profit_pct": summary["target_profit_pct"],
+            "target_profit_value": summary["target_profit_value"],
+            "top_n": summary["top_n"],
+            "status": summary["status"],
+            "created_at": summary["created_at"],
+            "updated_at": summary["updated_at"],
+            "last_recalibrated_at": summary["last_recalibrated_at"],
+            "closed_at": str(plan_row.get("closed_at") or ""),
+            "notes": str(plan_row.get("notes") or ""),
+        },
+        "summary": summary,
+        "pairs": pairs,
+        "snapshots": _daily_target_plan_snapshots(conn, plan_id, limit=80),
+        "performance": perf,
+    }
+
+
+def _recalibrate_daily_target_plan(conn, plan_row, seed_capital=None, target_profit_pct=None, top_n=None):
+    plan_id = int(parse_float(plan_row.get("id"), 0.0))
+    perf = compute_daily_target_performance(conn)
+    tax_cfg = get_tax_profile_config(conn)
+    realized_tax_summary = compute_realized_equity_tax_summary(conn)
+    target_pct_effective = round(
+        parse_float((target_profit_pct if target_profit_pct is not None else plan_row.get("target_profit_pct")), 1.0),
+        2,
+    )
+    effective_seed = round(
+        parse_float(
+            perf.get("suggested_next_seed_capital"),
+            (seed_capital if seed_capital is not None else plan_row.get("seed_capital")),
+        ),
+        2,
+    )
+    suggestions = build_daily_target_suggestions(
+        conn,
+        seed_capital=effective_seed,
+        target_profit_pct=target_pct_effective,
+        top_n=(top_n if top_n is not None else plan_row.get("top_n")),
+    )
+    pairs = list(suggestions.get("pairs") or [])
+    buy_candidates = [dict(x) for x in (suggestions.get("_buy_candidates") or [])]
+    buy_candidate_map = {symbol_upper(x.get("symbol")): dict(x) for x in buy_candidates if symbol_upper(x.get("symbol"))}
+    now_ts = now_iso()
+    active_rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT *
+            FROM daily_target_plan_pairs
+            WHERE plan_id = ? AND LOWER(state) <> 'replaced'
+            ORDER BY priority_rank, id
+            """,
+            (plan_id,),
+        ).fetchall()
+    ]
+    pending_rows = {
+        int(parse_float(r.get("priority_rank"), 0.0)): dict(r)
+        for r in active_rows
+        if str(r.get("state") or "").strip().lower() == "pending"
+    }
+    locked_rows = [r for r in active_rows if str(r.get("state") or "").strip().lower() in ("sell_done", "buy_done", "executed")]
+    reserved_symbols = set()
+    for row in locked_rows:
+        sell_symbol = symbol_upper(row.get("sell_symbol"))
+        buy_symbol = symbol_upper(row.get("buy_symbol"))
+        state = str(row.get("state") or "").strip().lower()
+        if sell_symbol:
+            reserved_symbols.add(sell_symbol)
+        if buy_symbol and state in ("buy_done", "executed"):
+            reserved_symbols.add(buy_symbol)
+    recalibration_switches = 0
+    pipeline_reviewed = 0
+    split_map = load_split_map(conn)
+    for row in locked_rows:
+        state = str(row.get("state") or "").strip().lower()
+        row_id = int(parse_float(row.get("id"), 0.0))
+        sell_symbol = symbol_upper(row.get("sell_symbol"))
+        live = _daily_target_live_pair_metrics(conn, row, target_profit_pct=target_pct_effective)
+        if state in ("buy_done", "executed"):
+            pipeline_reviewed += 1
+            conn.execute(
+                """
+                UPDATE daily_target_plan_pairs
+                SET current_sell_ref_price = ?, current_buy_ref_price = ?, buy_target_exit_price = ?, target_progress_pct = ?,
+                    updated_at = ?, last_recalibrated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    round(parse_float(live.get("current_sell_ref_price"), row.get("current_sell_ref_price")), 4),
+                    round(parse_float(live.get("current_buy_ref_price"), row.get("current_buy_ref_price")), 4),
+                    round(parse_float(live.get("buy_target_exit_price"), row.get("buy_target_exit_price")), 4),
+                    round(parse_float(live.get("target_progress_pct"), row.get("target_progress_pct")), 2),
+                    now_ts,
+                    now_ts,
+                    row_id,
+                ),
+            )
+            continue
+        if state != "sell_done":
+            continue
+        pipeline_reviewed += 1
+        sell_exec_price = parse_float(row.get("executed_sell_price"), 0.0)
+        if sell_exec_price <= 0:
+            sell_exec_price = parse_float(row.get("current_sell_ref_price"), row.get("sell_ref_price"))
+        available_capital = round(sell_exec_price * parse_float(row.get("sell_qty"), 0.0), 2)
+        sell_exchange = str(row.get("sell_exchange") or "NSE").upper()
+        sell_costs = _daily_target_zerodha_delivery_costs(
+            available_capital,
+            exchange=sell_exchange,
+            side="SELL",
+            include_dp_on_sell=True,
+            tax_cfg=tax_cfg,
+        )
+        sell_tax = _daily_target_estimate_sell_tax_profile(
+            conn,
+            sell_symbol,
+            parse_float(row.get("sell_qty"), 0.0),
+            sell_exec_price,
+            split_map=split_map,
+            as_of_date=(row.get("executed_sell_at") or now_local_date_iso()),
+            tax_cfg=tax_cfg,
+            realized_tax_summary=realized_tax_summary,
+        )
+        available_capital = max(0.0, round(available_capital - parse_float(sell_costs.get("total"), 0.0), 2))
+        required_buy_leg_net = round(
+            max(
+                0.0,
+                ((available_capital * target_pct_effective) / 100.0)
+                + parse_float(sell_costs.get("total"), 0.0)
+                + parse_float(sell_tax.get("tax_drag"), 0.0),
+            ),
+            2,
+        )
+        blocked_for_row = set(reserved_symbols)
+        current_buy_symbol = symbol_upper(row.get("buy_symbol"))
+        if current_buy_symbol and current_buy_symbol in blocked_for_row:
+            blocked_for_row.remove(current_buy_symbol)
+        best_buy_leg = None
+        for cand in buy_candidates:
+            cand_symbol = symbol_upper(cand.get("symbol"))
+            if not cand_symbol or cand_symbol == sell_symbol or cand_symbol in blocked_for_row:
+                continue
+            leg = _daily_target_build_buy_leg(
+                cand,
+                available_capital,
+                target_profit_pct=target_pct_effective,
+                required_net_profit=required_buy_leg_net,
+                tax_cfg=tax_cfg,
+            )
+            if not leg:
+                continue
+            if best_buy_leg is None or parse_float(leg.get("buy_score"), 0.0) > parse_float(best_buy_leg.get("buy_score"), 0.0):
+                best_buy_leg = leg
+        if best_buy_leg and _daily_target_should_switch_pipeline_buy(row, best_buy_leg, buy_candidate_map):
+            _insert_daily_target_pair_snapshot(conn, row_id, snapshot_note="pipeline_buy_switch_before_update")
+            replacement_live = _daily_target_live_pair_metrics(
+                conn,
+                {
+                    **row,
+                    **best_buy_leg,
+                    "buy_ref_price": best_buy_leg.get("buy_ref_price"),
+                    "buy_target_exit_price": best_buy_leg.get("buy_target_exit_price"),
+                    "executed_buy_price": None,
+                },
+                target_profit_pct=target_pct_effective,
+            )
+            conn.execute(
+                """
+                UPDATE daily_target_plan_pairs
+                SET buy_symbol = ?, buy_qty = ?, buy_ref_price = ?, buy_trade_value = ?, buy_target_exit_price = ?,
+                    buy_score = ?, buy_reason = ?, expected_profit_value = ?, rotation_score = ?,
+                    current_sell_ref_price = ?, current_buy_ref_price = ?, target_progress_pct = ?, updated_at = ?, last_recalibrated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    symbol_upper(best_buy_leg.get("buy_symbol")),
+                    round(parse_float(best_buy_leg.get("buy_qty"), 0.0), 4),
+                    round(parse_float(best_buy_leg.get("buy_ref_price"), 0.0), 4),
+                    round(parse_float(best_buy_leg.get("buy_trade_value"), 0.0), 2),
+                    round(parse_float(best_buy_leg.get("buy_target_exit_price"), 0.0), 4),
+                    round(parse_float(best_buy_leg.get("buy_score"), 0.0), 4),
+                    str(best_buy_leg.get("buy_reason") or "").strip() or None,
+                    round(parse_float(best_buy_leg.get("expected_profit_value"), 0.0), 2),
+                    round(
+                        parse_float(row.get("sell_score"), 0.0)
+                        + parse_float(best_buy_leg.get("buy_score"), 0.0)
+                        + (
+                            (
+                                parse_float(sell_tax.get("tax_relief"), 0.0)
+                                - parse_float(sell_tax.get("tax_payable"), 0.0)
+                                - parse_float(sell_costs.get("total"), 0.0)
+                                - parse_float(best_buy_leg.get("buy_entry_cost_total"), 0.0)
+                            )
+                            / max(effective_seed, 1.0)
+                            * 500.0
+                        ),
+                        4,
+                    ),
+                    round(parse_float(live.get("current_sell_ref_price"), row.get("current_sell_ref_price")), 4),
+                    round(parse_float(replacement_live.get("current_buy_ref_price"), best_buy_leg.get("buy_ref_price")), 4),
+                    round(parse_float(replacement_live.get("target_progress_pct"), 0.0), 2),
+                    now_ts,
+                    now_ts,
+                    row_id,
+                ),
+            )
+            _insert_daily_target_pair_snapshot(conn, row_id, snapshot_note="pipeline_buy_switch_after_update")
+            recalibration_switches += 1
+            reserved_symbols.add(symbol_upper(best_buy_leg.get("buy_symbol")))
+        else:
+            reserved_symbols.add(current_buy_symbol)
+            conn.execute(
+                """
+                UPDATE daily_target_plan_pairs
+                SET current_sell_ref_price = ?, current_buy_ref_price = ?, buy_target_exit_price = ?, target_progress_pct = ?,
+                    updated_at = ?, last_recalibrated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    round(parse_float(live.get("current_sell_ref_price"), row.get("current_sell_ref_price")), 4),
+                    round(parse_float(live.get("current_buy_ref_price"), row.get("current_buy_ref_price")), 4),
+                    round(parse_float(live.get("buy_target_exit_price"), row.get("buy_target_exit_price")), 4),
+                    round(parse_float(live.get("target_progress_pct"), row.get("target_progress_pct")), 2),
+                    now_ts,
+                    now_ts,
+                    row_id,
+                ),
+            )
+    handled_ranks = set()
+    filtered_pairs = []
+    temp_reserved = set(reserved_symbols)
+    for pair in pairs:
+        sell_symbol = symbol_upper(pair.get("sell_symbol"))
+        buy_symbol = symbol_upper(pair.get("buy_symbol"))
+        if not sell_symbol or not buy_symbol:
+            continue
+        if sell_symbol in temp_reserved or buy_symbol in temp_reserved:
+            continue
+        filtered_pairs.append(pair)
+        temp_reserved.add(sell_symbol)
+        temp_reserved.add(buy_symbol)
+    for pair in filtered_pairs:
+        rank = int(parse_float(pair.get("priority_rank"), 0.0))
+        handled_ranks.add(rank)
+        existing = pending_rows.get(rank)
+        if existing and symbol_upper(existing.get("sell_symbol")) == symbol_upper(pair.get("sell_symbol")) and symbol_upper(existing.get("buy_symbol")) == symbol_upper(pair.get("buy_symbol")):
+            _insert_daily_target_pair_snapshot(conn, existing.get("id"), snapshot_note="recalibrated_before_update")
+            conn.execute(
+                """
+                UPDATE daily_target_plan_pairs
+                SET sell_qty = ?, sell_ref_price = ?, sell_trade_value = ?, sell_target_price = ?, sell_score = ?,
+                    sell_reason = ?, buy_qty = ?, buy_ref_price = ?, buy_trade_value = ?, buy_target_exit_price = ?,
+                    buy_score = ?, buy_reason = ?, expected_profit_value = ?, rotation_score = ?,
+                    current_sell_ref_price = ?, current_buy_ref_price = ?, target_progress_pct = ?, updated_at = ?,
+                    last_recalibrated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    round(parse_float(pair.get("sell_qty"), 0.0), 4),
+                    round(parse_float(pair.get("sell_ref_price"), 0.0), 4),
+                    round(parse_float(pair.get("sell_trade_value"), 0.0), 2),
+                    round(parse_float(pair.get("sell_target_price"), 0.0), 4),
+                    round(parse_float(pair.get("sell_score"), 0.0), 4),
+                    str(pair.get("sell_reason") or "").strip() or None,
+                    round(parse_float(pair.get("buy_qty"), 0.0), 4),
+                    round(parse_float(pair.get("buy_ref_price"), 0.0), 4),
+                    round(parse_float(pair.get("buy_trade_value"), 0.0), 2),
+                    round(parse_float(pair.get("buy_target_exit_price"), 0.0), 4),
+                    round(parse_float(pair.get("buy_score"), 0.0), 4),
+                    str(pair.get("buy_reason") or "").strip() or None,
+                    round(parse_float(pair.get("expected_profit_value"), 0.0), 2),
+                    round(parse_float(pair.get("rotation_score"), 0.0), 4),
+                    round(parse_float(pair.get("current_sell_ref_price"), pair.get("sell_ref_price")), 4),
+                    round(parse_float(pair.get("current_buy_ref_price"), pair.get("buy_ref_price")), 4),
+                    round(
+                        _daily_target_pair_progress(
+                            pair.get("buy_ref_price"), pair.get("current_buy_ref_price"), pair.get("buy_target_exit_price")
+                        ),
+                        2,
+                    ),
+                    now_ts,
+                    now_ts,
+                    int(parse_float(existing.get("id"), 0.0)),
+                ),
+            )
+            _insert_daily_target_pair_snapshot(conn, existing.get("id"), snapshot_note="recalibrated_after_update")
+            reserved_symbols.add(symbol_upper(pair.get("sell_symbol")))
+            reserved_symbols.add(symbol_upper(pair.get("buy_symbol")))
+            continue
+        if existing:
+            _insert_daily_target_pair_snapshot(conn, existing.get("id"), snapshot_note="replaced_due_to_market_shift")
+            conn.execute(
+                "UPDATE daily_target_plan_pairs SET state='replaced', updated_at=?, last_recalibrated_at=? WHERE id = ?",
+                (now_ts, now_ts, int(parse_float(existing.get("id"), 0.0))),
+            )
+            recalibration_switches += 1
+        _insert_daily_target_pair(conn, plan_id, pair, state="pending")
+        reserved_symbols.add(symbol_upper(pair.get("sell_symbol")))
+        reserved_symbols.add(symbol_upper(pair.get("buy_symbol")))
+    for rank, existing in pending_rows.items():
+        if rank in handled_ranks:
+            continue
+        _insert_daily_target_pair_snapshot(conn, existing.get("id"), snapshot_note="retired_on_recalibration")
+        conn.execute(
+            "UPDATE daily_target_plan_pairs SET state='replaced', updated_at=?, last_recalibrated_at=? WHERE id = ?",
+            (now_ts, now_ts, int(parse_float(existing.get("id"), 0.0))),
+        )
+        recalibration_switches += 1
+    summary = suggestions.get("summary") or {}
+    summary["pipeline_rows_reviewed"] = pipeline_reviewed
+    summary["pipeline_switches"] = recalibration_switches
+    summary["active_live_price_recalibrated_at"] = now_ts
+    summary["generated_pairs_count"] = len(filtered_pairs)
+    conn.execute(
+        """
+        UPDATE daily_target_plans
+        SET seed_capital = ?, target_profit_pct = ?, target_profit_value = ?, top_n = ?, updated_at = ?, last_recalibrated_at = ?
+        WHERE id = ?
+        """,
+        (
+            round(parse_float(summary.get("seed_capital"), 0.0), 2),
+            round(parse_float(summary.get("target_profit_pct"), 0.0), 2),
+            round(parse_float(summary.get("target_profit_value"), 0.0), 2),
+            int(parse_float(summary.get("top_n"), 0.0)),
+            now_ts,
+            now_ts,
+            plan_id,
+        ),
+    )
+    updated = conn.execute(
+        """
+        SELECT id, seed_capital, target_profit_pct, target_profit_value, top_n, status, created_at, updated_at,
+               last_recalibrated_at, closed_at, notes
+        FROM daily_target_plans
+        WHERE id = ?
+        """,
+        (plan_id,),
+    ).fetchone()
+    payload = _daily_target_plan_payload(conn, dict(updated) if updated else None)
+    payload["suggestion_meta"] = summary
+    return payload
+
+
+def get_or_create_daily_target_plan(conn, seed_capital=10000.0, target_profit_pct=1.0, top_n=5, recalibrate=True):
+    active = get_active_daily_target_plan(conn)
+    if active:
+        if recalibrate:
+            return _recalibrate_daily_target_plan(conn, active, seed_capital=seed_capital, target_profit_pct=target_profit_pct, top_n=top_n)
+        payload = _daily_target_plan_payload(conn, active)
+        payload["suggestion_meta"] = {
+            "seed_capital": round(parse_float(active.get("seed_capital"), 0.0), 2),
+            "target_profit_pct": round(parse_float(active.get("target_profit_pct"), 0.0), 2),
+            "target_profit_value": round(parse_float(active.get("target_profit_value"), 0.0), 2),
+            "top_n": int(parse_float(active.get("top_n"), 0.0)),
+        }
+        return payload
+    perf = compute_daily_target_performance(conn)
+    next_seed = round(parse_float(perf.get("suggested_next_seed_capital"), seed_capital), 2)
+    effective_seed = next_seed if next_seed > 0 else round(parse_float(seed_capital, 10000.0), 2)
+    suggestions = build_daily_target_suggestions(conn, seed_capital=effective_seed, target_profit_pct=target_profit_pct, top_n=top_n)
+    summary = suggestions.get("summary") or {}
+    ts = now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO daily_target_plans(
+          seed_capital, target_profit_pct, target_profit_value, top_n, status, created_at, updated_at, last_recalibrated_at, notes
+        ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+        """,
+        (
+            round(parse_float(summary.get("seed_capital"), 0.0), 2),
+            round(parse_float(summary.get("target_profit_pct"), 0.0), 2),
+            round(parse_float(summary.get("target_profit_value"), 0.0), 2),
+            int(parse_float(summary.get("top_n"), 0.0)),
+            ts,
+            ts,
+            ts,
+            "Existing non-zero holdings only; ranked for a 1-day rotation objective.",
+        ),
+    )
+    plan_id = int(cur.lastrowid)
+    for pair in suggestions.get("pairs") or []:
+        _insert_daily_target_pair(conn, plan_id, pair, state="pending")
+    row = conn.execute(
+        """
+        SELECT id, seed_capital, target_profit_pct, target_profit_value, top_n, status, created_at, updated_at,
+               last_recalibrated_at, closed_at, notes
+        FROM daily_target_plans
+        WHERE id = ?
+        """,
+        (plan_id,),
+    ).fetchone()
+    payload = _daily_target_plan_payload(conn, dict(row) if row else None)
+    payload["suggestion_meta"] = summary
+    return payload
+
+
+def reset_daily_target_plan(conn):
+    active = get_active_daily_target_plan(conn)
+    if not active:
+        raise ValueError("no_active_daily_target_plan")
+    plan_id = int(parse_float(active.get("id"), 0.0))
+    ts = now_iso()
+    conn.execute(
+        "UPDATE daily_target_plans SET status='reset', updated_at=?, closed_at=? WHERE id = ? AND LOWER(status)='active'",
+        (ts, ts, plan_id),
+    )
+    return {"ok": True, "plan_id": plan_id, "status": "reset", "closed_at": ts}
+
+
+def update_daily_target_pair(conn, pair_id, state="pending", note="", executed_sell_price=None, executed_sell_at=None, executed_buy_price=None, executed_buy_at=None):
+    iid = int(parse_float(pair_id, 0.0))
+    row = conn.execute(
+        """
+        SELECT p.id, p.plan_id, p.state, p.executed_sell_price, p.executed_sell_at, p.executed_buy_price, p.executed_buy_at,
+               dp.status AS plan_status
+        FROM daily_target_plan_pairs p
+        JOIN daily_target_plans dp ON dp.id = p.plan_id
+        WHERE p.id = ?
+        """,
+        (iid,),
+    ).fetchone()
+    if not row:
+        raise ValueError("daily_target_pair_not_found")
+    if str(row["plan_status"] or "").lower() != "active":
+        raise ValueError("daily_target_plan_not_active")
+    state_norm = _normalize_daily_target_pair_state(state, default="pending")
+    if state_norm == "replaced":
+        raise ValueError("daily_target_pair_state_not_user_editable")
+    sell_px = None if row["executed_sell_price"] is None else parse_float(row["executed_sell_price"], 0.0)
+    buy_px = None if row["executed_buy_price"] is None else parse_float(row["executed_buy_price"], 0.0)
+    sell_ts = str(row["executed_sell_at"] or "") or None
+    buy_ts = str(row["executed_buy_at"] or "") or None
+    if state_norm == "pending":
+        sell_px = None
+        sell_ts = None
+        buy_px = None
+        buy_ts = None
+    else:
+        if executed_sell_price is not None and str(executed_sell_price).strip() != "":
+            sell_px = parse_float(executed_sell_price, 0.0)
+            if not math.isfinite(sell_px) or sell_px <= 0:
+                raise ValueError("executed_sell_price_must_be_positive")
+            sell_ts = _normalize_execution_timestamp(executed_sell_at, fallback_now=True)
+        elif executed_sell_at is not None and str(executed_sell_at).strip() != "":
+            if sell_px is None or sell_px <= 0:
+                raise ValueError("executed_sell_price_required")
+            sell_ts = _normalize_execution_timestamp(executed_sell_at, fallback_now=True)
+
+        if executed_buy_price is not None and str(executed_buy_price).strip() != "":
+            buy_px = parse_float(executed_buy_price, 0.0)
+            if not math.isfinite(buy_px) or buy_px <= 0:
+                raise ValueError("executed_buy_price_must_be_positive")
+            buy_ts = _normalize_execution_timestamp(executed_buy_at, fallback_now=True)
+        elif executed_buy_at is not None and str(executed_buy_at).strip() != "":
+            if buy_px is None or buy_px <= 0:
+                raise ValueError("executed_buy_price_required")
+            buy_ts = _normalize_execution_timestamp(executed_buy_at, fallback_now=True)
+
+    sell_present = sell_px is not None and math.isfinite(sell_px) and sell_px > 0
+    buy_present = buy_px is not None and math.isfinite(buy_px) and buy_px > 0
+    effective_state = state_norm
+    if effective_state in ("sell_done", "buy_done", "executed") and not sell_present:
+        raise ValueError("executed_sell_price_required")
+    if effective_state in ("buy_done", "executed") and not buy_present:
+        raise ValueError("executed_buy_price_required")
+    if effective_state in ("sell_done", "buy_done") and sell_present and buy_present:
+        effective_state = "executed"
+    note_text = str(note or "").strip() or None
+    conn.execute(
+        """
+        UPDATE daily_target_plan_pairs
+        SET state = ?, executed_sell_price = ?, executed_sell_at = ?, executed_buy_price = ?, executed_buy_at = ?,
+            completion_note = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (effective_state, sell_px, sell_ts, buy_px, buy_ts, note_text, now_iso(), iid),
+    )
+    if effective_state == "executed":
+        sync_daily_target_positions(conn, iid)
+    reconcile_daily_target_trade_links(conn, plan_id=int(parse_float(row["plan_id"], 0.0)))
+    active = get_active_daily_target_plan(conn)
+    payload = _daily_target_plan_payload(conn, active)
+    payload["updated_pair_id"] = iid
+    return payload
+
+
+def list_daily_target_plan_history(conn, limit=120, date_from=None, date_to=None, state_filter=None):
+    reconcile_daily_target_trade_links(conn)
+    lim = max(1, min(500, int(parse_float(limit, 120))))
+    df = str(date_from or "").strip()
+    dt_to = str(date_to or "").strip()
+    sf = str(state_filter or "all").strip().lower()
+    where = []
+    params = []
+    if df:
+        where.append("DATE(COALESCE(NULLIF(p.executed_buy_at, ''), NULLIF(p.executed_sell_at, ''), p.updated_at)) >= DATE(?)")
+        params.append(df[:10])
+    if dt_to:
+        where.append("DATE(COALESCE(NULLIF(p.executed_buy_at, ''), NULLIF(p.executed_sell_at, ''), p.updated_at)) <= DATE(?)")
+        params.append(dt_to[:10])
+    if sf and sf != "all":
+        if sf == "active":
+            where.append("LOWER(COALESCE(p.state, 'pending')) IN ('pending', 'sell_done', 'buy_done')")
+        elif sf == "closed":
+            where.append("LOWER(COALESCE(p.state, 'pending')) IN ('executed', 'skipped', 'replaced')")
+        else:
+            where.append("LOWER(COALESCE(p.state, 'pending')) = ?")
+            params.append(sf)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    rows = conn.execute(
+        f"""
+        SELECT p.id AS pair_id, p.plan_id, p.priority_rank, p.state, p.sell_symbol, p.sell_qty, p.sell_ref_price,
+               p.sell_trade_value, p.buy_symbol, p.buy_qty, p.buy_ref_price, p.buy_trade_value, p.buy_target_exit_price,
+               p.expected_profit_value, p.rotation_score, p.matched_sell_trade_id, p.matched_buy_trade_id,
+               p.reconciliation_status, p.executed_sell_price, p.executed_sell_at, p.executed_buy_price,
+               p.executed_buy_at, p.completion_note, p.updated_at, dp.seed_capital, dp.target_profit_pct, dp.status AS plan_status,
+               dp.created_at AS plan_created_at, dp.closed_at AS plan_closed_at
+        FROM daily_target_plan_pairs p
+        JOIN daily_target_plans dp ON dp.id = p.plan_id
+        {where_sql}
+        ORDER BY p.updated_at DESC, p.id DESC
+        LIMIT ?
+        """,
+        tuple(params + [lim]),
+    ).fetchall()
+    total_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM daily_target_plan_pairs p
+            JOIN daily_target_plans dp ON dp.id = p.plan_id
+            {where_sql}
+            """,
+            tuple(params),
+        ).fetchone()["c"]
+    )
+    items = []
+    for r in rows:
+        current_buy_ltp = get_effective_ltp(conn, r["buy_symbol"]) if parse_float(r["buy_qty"], 0.0) > 0 else 0.0
+        current_buy_value = round(parse_float(r["buy_qty"], 0.0) * current_buy_ltp, 2) if current_buy_ltp > 0 else 0.0
+        buy_cost = round(parse_float(r["executed_buy_price"], 0.0) * parse_float(r["buy_qty"], 0.0), 2) if parse_float(r["executed_buy_price"], 0.0) > 0 else round(parse_float(r["buy_trade_value"], 0.0), 2)
+        live_mtm_pnl = round(current_buy_value - buy_cost, 2) if current_buy_value > 0 and buy_cost > 0 else 0.0
+        items.append(
+            {
+                "pair_id": int(parse_float(r["pair_id"], 0.0)),
+                "plan_id": int(parse_float(r["plan_id"], 0.0)),
+                "priority_rank": int(parse_float(r["priority_rank"], 0.0)),
+                "state": str(r["state"] or ""),
+                "sell_symbol": str(r["sell_symbol"] or ""),
+                "sell_qty": round(parse_float(r["sell_qty"], 0.0), 4),
+                "sell_ref_price": round(parse_float(r["sell_ref_price"], 0.0), 4),
+                "sell_trade_value": round(parse_float(r["sell_trade_value"], 0.0), 2),
+                "buy_symbol": str(r["buy_symbol"] or ""),
+                "buy_qty": round(parse_float(r["buy_qty"], 0.0), 4),
+                "buy_ref_price": round(parse_float(r["buy_ref_price"], 0.0), 4),
+                "buy_trade_value": round(parse_float(r["buy_trade_value"], 0.0), 2),
+                "buy_target_exit_price": round(parse_float(r["buy_target_exit_price"], 0.0), 4),
+                "expected_profit_value": round(parse_float(r["expected_profit_value"], 0.0), 2),
+                "rotation_score": round(parse_float(r["rotation_score"], 0.0), 4),
+                "matched_sell_trade_id": int(parse_float(r["matched_sell_trade_id"], 0.0)) or None,
+                "matched_buy_trade_id": int(parse_float(r["matched_buy_trade_id"], 0.0)) or None,
+                "reconciliation_status": str(r["reconciliation_status"] or "unmatched"),
+                "executed_sell_price": (None if r["executed_sell_price"] is None else round(parse_float(r["executed_sell_price"], 0.0), 4)),
+                "executed_sell_at": str(r["executed_sell_at"] or ""),
+                "executed_sell_value": round(parse_float(r["executed_sell_price"], 0.0) * parse_float(r["sell_qty"], 0.0), 2) if parse_float(r["executed_sell_price"], 0.0) > 0 else None,
+                "executed_buy_price": (None if r["executed_buy_price"] is None else round(parse_float(r["executed_buy_price"], 0.0), 4)),
+                "executed_buy_at": str(r["executed_buy_at"] or ""),
+                "executed_buy_value": round(parse_float(r["executed_buy_price"], 0.0) * parse_float(r["buy_qty"], 0.0), 2) if parse_float(r["executed_buy_price"], 0.0) > 0 else None,
+                "current_buy_ltp": round(current_buy_ltp, 4),
+                "current_buy_value": current_buy_value,
+                "live_mtm_pnl": live_mtm_pnl,
+                "completion_note": str(r["completion_note"] or ""),
+                "updated_at": str(r["updated_at"] or ""),
+                "seed_capital": round(parse_float(r["seed_capital"], 0.0), 2),
+                "target_profit_pct": round(parse_float(r["target_profit_pct"], 0.0), 2),
+                "plan_status": str(r["plan_status"] or ""),
+                "plan_created_at": str(r["plan_created_at"] or ""),
+                "plan_closed_at": str(r["plan_closed_at"] or ""),
+            }
+        )
+    summary = {
+        "count": len(items),
+        "filtered_count": len(items),
+        "total_count": total_count,
+        "date_from": df or "",
+        "date_to": dt_to or "",
+        "state_filter": sf or "all",
+        "executed": sum(1 for x in items if str(x.get("state") or "").lower() == "executed"),
+        "pending": sum(1 for x in items if str(x.get("state") or "").lower() == "pending"),
+        "sell_done": sum(1 for x in items if str(x.get("state") or "").lower() == "sell_done"),
+        "buy_done": sum(1 for x in items if str(x.get("state") or "").lower() == "buy_done"),
+        "skipped": sum(1 for x in items if str(x.get("state") or "").lower() == "skipped"),
+        "replaced": sum(1 for x in items if str(x.get("state") or "").lower() == "replaced"),
+        "matched": sum(1 for x in items if str(x.get("reconciliation_status") or "").lower() == "matched"),
+        "partial": sum(1 for x in items if str(x.get("reconciliation_status") or "").lower() == "partial"),
+        "unmatched": sum(1 for x in items if str(x.get("reconciliation_status") or "").lower() == "unmatched"),
+    }
+    return {"items": items, "summary": summary}
 
 
 def extract_known_symbol_from_text(conn, text):
@@ -12475,11 +15764,11 @@ class MarketDataClient:
         if isinstance(from_date, dt.date):
             from_s = from_date.strftime("%d-%m-%Y")
         else:
-            from_s = parse_history_date(from_date).strftime("%d-%m-%Y")
+            from_s = (parse_history_date(from_date) or ist_now().date()).strftime("%d-%m-%Y")
         if isinstance(to_date, dt.date):
             to_s = to_date.strftime("%d-%m-%Y")
         else:
-            to_s = parse_history_date(to_date).strftime("%d-%m-%Y")
+            to_s = (parse_history_date(to_date) or ist_now().date()).strftime("%d-%m-%Y")
         params = {
             "symbol": str(symbol).upper(),
             "series": '["EQ"]',
@@ -14917,6 +18206,49 @@ class AppHandler(SimpleHTTPRequestHandler):
                 json_response(self, out)
                 return
 
+            if path == "/api/v1/daily-target/plan":
+                seed_raw = qs.get("seed_capital", ["10000"])[0]
+                target_raw = qs.get("target_profit_pct", ["1"])[0]
+                top_n_raw = qs.get("top_n", ["5"])[0]
+                recalc_raw = qs.get("recalibrate", ["1"])[0]
+                try:
+                    recalibrate = parse_bool(recalc_raw, default=True)
+                except ValueError:
+                    json_response(self, {"error": "recalibrate_must_be_boolean"}, HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    out = get_or_create_daily_target_plan(
+                        conn,
+                        seed_capital=seed_raw,
+                        target_profit_pct=target_raw,
+                        top_n=top_n_raw,
+                        recalibrate=recalibrate,
+                    )
+                except ValueError as ex:
+                    json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
+                    return
+                json_response(self, out)
+                return
+
+            if path == "/api/v1/daily-target/history":
+                limit_raw = qs.get("limit", ["120"])[0]
+                date_from_raw = qs.get("date_from", [""])[0]
+                date_to_raw = qs.get("date_to", [""])[0]
+                state_raw = qs.get("state", ["all"])[0]
+                try:
+                    out = list_daily_target_plan_history(
+                        conn,
+                        limit=limit_raw,
+                        date_from=date_from_raw,
+                        date_to=date_to_raw,
+                        state_filter=state_raw,
+                    )
+                except ValueError as ex:
+                    json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
+                    return
+                json_response(self, out)
+                return
+
             if path.startswith("/api/v1/scrips/") and path.endswith("/trades"):
                 symbol_req = path.split("/")[4]
                 symbol = resolve_symbol(conn, symbol_req)
@@ -15230,6 +18562,20 @@ class AppHandler(SimpleHTTPRequestHandler):
                 json_response(self, {"item": insights})
                 return
 
+            if path == "/api/v1/strategy/audits":
+                limit_s = qs.get("limit", ["25"])[0]
+                try:
+                    limit_n = max(1, min(200, int(limit_s)))
+                except Exception:
+                    limit_n = 25
+                json_response(self, list_strategy_audit_runs(conn, limit=limit_n))
+                return
+
+            if path == "/api/v1/strategy/audits/latest":
+                out = list_strategy_audit_runs(conn, limit=1)
+                json_response(self, out.get("latest") or {"latest": None})
+                return
+
             if path == "/api/v1/intel/summary":
                 limit_s = qs.get("limit", ["40"])[0]
                 try:
@@ -15309,6 +18655,10 @@ class AppHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/v1/agents/status":
                 json_response(self, {"items": build_agents_status(conn)})
+                return
+
+            if path == "/api/v1/attention":
+                json_response(self, build_attention_console_payload(conn))
                 return
 
             if path == "/api/v1/agents/backtest/history":
@@ -15774,6 +19124,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     (trade_symbol, side, trade_date, qty, price, amount, ext_trade_id, notes),
                 )
                 trade_id = cur.lastrowid
+                reconcile_daily_target_trade_links(conn)
                 conn.commit()
             recompute_holdings_and_signals()
             json_response(
@@ -15792,6 +19143,22 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/v1/strategy/refresh":
             item = refresh_strategy_analytics(force=True)
             json_response(self, {"ok": True, "item": item})
+            return
+
+        if parsed.path == "/api/v1/strategy/audits/run":
+            body = self._read_json()
+            try:
+                refresh_first = parse_bool(body.get("refresh_strategy", False), default=False)
+            except ValueError:
+                json_response(self, {"error": "refresh_strategy_must_be_boolean"}, HTTPStatus.BAD_REQUEST)
+                return
+            with db_connect() as conn:
+                try:
+                    out = run_strategy_audit(conn, refresh_strategy=refresh_first)
+                except ValueError as ex:
+                    json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
+                    return
+            json_response(self, out)
             return
 
         if parsed.path.startswith("/api/v1/scrips/") and parsed.path.endswith("/sell-simulate"):
@@ -15912,6 +19279,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     (trade_symbol, side, trade_date, qty, price, amount, notes),
                 )
                 trade_id = cur.lastrowid
+                reconcile_daily_target_trade_links(conn)
                 conn.commit()
             recompute_holdings_and_signals()
             json_response(self, {"ok": True, "trade_id": trade_id, "symbol": trade_symbol})
@@ -15942,6 +19310,17 @@ class AppHandler(SimpleHTTPRequestHandler):
             json_response(self, out)
             return
 
+        if parsed.path == "/api/v1/daily-target/reset":
+            with db_connect() as conn:
+                try:
+                    out = reset_daily_target_plan(conn)
+                except ValueError as ex:
+                    json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
+                    return
+                conn.commit()
+            json_response(self, out)
+            return
+
         if parsed.path == "/api/v1/upload/tradebook":
             body = self._read_json()
             b64 = body.get("content_base64")
@@ -15962,6 +19341,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             save_path.write_bytes(raw)
             stats = import_tradebook_bytes(raw, filename=safe_name, collect_skipped=include_skipped)
             with db_connect() as conn:
+                reconcile_daily_target_trade_links(conn)
+                conn.commit()
                 summary = portfolio_summary(conn)
             json_response(self, {"ok": True, "stats": stats, "summary": summary})
             return
@@ -16466,6 +19847,45 @@ class AppHandler(SimpleHTTPRequestHandler):
             json_response(self, out)
             return
 
+        if parsed.path.startswith("/api/v1/daily-target/pairs/"):
+            parts = parsed.path.rstrip("/").split("/")
+            if len(parts) != 6:
+                json_response(self, {"error": "invalid_path"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                pair_id = int(parts[5])
+            except Exception:
+                json_response(self, {"error": "invalid_daily_target_pair_id"}, HTTPStatus.BAD_REQUEST)
+                return
+            body = self._read_json()
+            state_raw = body.get("state")
+            if state_raw is None:
+                json_response(self, {"error": "state_required"}, HTTPStatus.BAD_REQUEST)
+                return
+            note = str(body.get("note", "") or "")
+            executed_sell_price = body.get("executed_sell_price", None)
+            executed_sell_at = body.get("executed_sell_at", None)
+            executed_buy_price = body.get("executed_buy_price", None)
+            executed_buy_at = body.get("executed_buy_at", None)
+            with db_connect() as conn:
+                try:
+                    out = update_daily_target_pair(
+                        conn,
+                        pair_id=pair_id,
+                        state=state_raw,
+                        note=note,
+                        executed_sell_price=executed_sell_price,
+                        executed_sell_at=executed_sell_at,
+                        executed_buy_price=executed_buy_price,
+                        executed_buy_at=executed_buy_at,
+                    )
+                except ValueError as ex:
+                    json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
+                    return
+                conn.commit()
+            json_response(self, out)
+            return
+
         if parsed.path.startswith("/api/v1/agents/") and parsed.path.endswith("/control"):
             parts = parsed.path.rstrip("/").split("/")
             if len(parts) != 6:
@@ -16677,6 +20097,16 @@ class AppHandler(SimpleHTTPRequestHandler):
                         max_runtime_sec=max(20, min(180, int(parse_float(interval_seconds, 45)))),
                         force=True,
                     )
+            elif agent == "tax_monitor":
+                with db_connect() as conn:
+                    set_tax_monitor_config(
+                        conn,
+                        enabled=enabled,
+                        interval_seconds=interval_seconds,
+                    )
+                    conn.commit()
+                if run_now:
+                    run_result = run_tax_rate_monitor_once(force=True, timeout=max(6, min(20, int(parse_float(interval_seconds, 8)))))
             else:
                 json_response(self, {"error": "invalid_agent"}, HTTPStatus.BAD_REQUEST)
                 return
@@ -17159,6 +20589,23 @@ def software_performance_worker(stop_event):
         stop_event.wait(timeout=max(SOFTWARE_PERF_AGENT_MIN_INTERVAL_SEC, int(sleep_for)))
 
 
+def tax_monitor_worker(stop_event):
+    while not stop_event.is_set():
+        sleep_for = TAX_MONITOR_INTERVAL_DEFAULT_SEC
+        try:
+            with db_connect() as conn:
+                cfg = get_tax_monitor_config(conn)
+            sleep_for = int(cfg.get("interval_seconds", TAX_MONITOR_INTERVAL_DEFAULT_SEC))
+            if cfg.get("enabled"):
+                run_tax_rate_monitor_once(force=False, timeout=max(6, min(20, int(sleep_for // 3600) + 8)))
+                with db_connect() as conn:
+                    refresh_attention_alerts(conn)
+                    conn.commit()
+        except Exception:
+            pass
+        stop_event.wait(timeout=max(TAX_MONITOR_MIN_INTERVAL_SEC, int(sleep_for)))
+
+
 def serve(port):
     WEB_DIR.mkdir(exist_ok=True)
     ensure_tenant_bootstrap()
@@ -17175,6 +20622,7 @@ def serve(port):
     chart_worker = threading.Thread(target=chart_intel_worker, args=(stop_event,), daemon=True)
     software_worker = threading.Thread(target=software_performance_worker, args=(stop_event,), daemon=True)
     risk_worker = threading.Thread(target=risk_analysis_worker, args=(stop_event,), daemon=True)
+    tax_worker = threading.Thread(target=tax_monitor_worker, args=(stop_event,), daemon=True)
     worker.start()
     backup_worker.start()
     repo_sync_worker_thread.start()
@@ -17184,6 +20632,7 @@ def serve(port):
     chart_worker.start()
     software_worker.start()
     risk_worker.start()
+    tax_worker.start()
     server = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
     active_key = get_active_tenant_key()
     p = tenant_paths(active_key)

@@ -168,6 +168,7 @@ def run():
             'data-tab="trades"',
             'data-tab="peak"',
             'data-tab="strategy"',
+            'data-tab="dailytarget"',
             'data-tab="harvest"',
             'data-tab="losslots"',
             'data-tab="cashflow"',
@@ -276,6 +277,119 @@ def run():
         expect("payload.planned_qty = Number(plannedQty);" in js, "rebalance planner update payload missing planned_qty")
 
     check("rebalance_locked_qty_edit_contract", rebalance_locked_qty_edit_contract)
+    def daily_target_planner_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        js = (root / "web" / "app.js").read_text(encoding="utf-8")
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        expect("CREATE TABLE IF NOT EXISTS daily_target_plans" in py, "daily target plan table missing")
+        expect("CREATE TABLE IF NOT EXISTS daily_target_plan_pairs" in py, "daily target pair table missing")
+        expect("CREATE TABLE IF NOT EXISTS daily_target_pair_snapshots" in py, "daily target snapshot table missing")
+        expect("def build_daily_target_suggestions(" in py, "daily target suggestion builder missing")
+        expect("def get_or_create_daily_target_plan(" in py, "daily target plan function missing")
+        expect("def update_daily_target_pair(" in py, "daily target pair update function missing")
+        expect("/api/v1/daily-target/plan" in py, "daily target plan endpoint missing")
+        expect("/api/v1/daily-target/history" in py, "daily target history endpoint missing")
+        expect("/api/v1/daily-target/reset" in py, "daily target reset endpoint missing")
+        expect("/api/v1/daily-target/pairs/" in py, "daily target pair endpoint missing")
+        expect('data-tab="dailytarget"' in html, "daily target tab missing in ui")
+        for token in (
+            'id="dailyTargetSeedCapital"',
+            'id="dailyTargetProfitPct"',
+            'id="dailyTargetTopN"',
+            'id="dailyTargetTable"',
+            'id="dailyTargetCompletedTable"',
+            'id="dailyTargetSnapshotsTable"',
+            'id="dailyTargetHistoryFrom"',
+            'id="dailyTargetHistoryTo"',
+            'id="dailyTargetHistoryState"',
+            'id="dailyTargetHistoryTable"',
+            'id="dailyTargetHistorySummary"',
+            'id="dailyTargetPerformance"',
+        ):
+            expect(token in html, f"daily target ui missing {token}")
+        expect("reconciliation_status" in py and "matched_sell_trade_id" in py and "matched_buy_trade_id" in py, "daily target trade reconciliation fields missing")
+        expect("def reconcile_daily_target_trade_links(" in py, "daily target trade reconciliation helper missing")
+        expect("def sync_daily_target_positions(" in py, "daily target position sync helper missing")
+        expect("CREATE TABLE IF NOT EXISTS daily_target_positions" in py, "daily target positions table missing")
+        expect("def compute_daily_target_performance(" in py, "daily target performance helper missing")
+        expect("used_symbols = set()" in py, "daily target disjoint buy/sell symbol guard missing")
+        expect("function renderDailyTargetPlan(" in js, "daily target renderer missing")
+        expect("function loadDailyTargetPlan(options = {})" in js, "daily target loader missing")
+        expect("function loadDailyTargetHistory(options = {})" in js, "daily target history loader missing")
+        expect("dailyTargetReconLabel" in js, "daily target reconciliation label helper missing")
+        expect("function isClosedDailyTargetState(" in js, "daily target closed-state helper missing")
+        expect("dailyTargetRefreshBtn" in js and "dailyTargetResetBtn" in js, "daily target buttons not wired")
+        expect("dailyTargetDrafts" in js, "daily target draft state missing")
+        expect("delete state.dailyTargetDrafts[itemId]" in js, "daily target draft cleanup missing after save")
+        expect("date_from" in py and "state_filter" in py, "daily target history backend filters missing")
+        expect("live_mtm_basis_value" in py, "daily target net live mtm basis metric missing")
+        expect('Net Live P/L' in js, "daily target net live pnl label missing")
+        expect("effective_state = state_norm" in py, "daily target effective state auto-upgrade missing")
+        expect("def _daily_target_live_pair_metrics(" in py, "daily target live pair metrics helper missing")
+        expect("def _daily_target_build_buy_leg(" in py, "daily target buy-leg builder missing")
+        expect("def _daily_target_zerodha_delivery_costs(" in py, "daily target Zerodha delivery cost helper missing")
+        expect("def _daily_target_estimate_sell_tax_profile(" in py, "daily target sell tax profile helper missing")
+        expect("def _daily_target_required_exit_price_for_net_goal(" in py, "daily target net-goal target exit helper missing")
+        expect("def compute_realized_equity_tax_summary(" in py, "daily target FY-aware realized equity tax summary helper missing")
+        expect("ltcg_remaining_exemption" in py, "daily target LTCG exemption tracking missing")
+        expect("tax_mode" in py and "equity_stcg_tax_pct" in py and "equity_ltcg_tax_pct" in py, "daily target tax summary fields missing")
+        expect("Tax Mode:" in js and "Broker Cost Model:" in js, "daily target tax assumptions not surfaced in ui summary")
+        expect("pipeline_buy_switch_after_update" in py, "daily target pipeline switch recalibration missing")
+
+    check("daily_target_planner_contract", daily_target_planner_contract)
+    def attention_console_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        js = (root / "web" / "app.js").read_text(encoding="utf-8")
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        schema = (root / "schema.sql").read_text(encoding="utf-8")
+        expect("CREATE TABLE IF NOT EXISTS tax_rate_sync_runs" in py and "CREATE TABLE IF NOT EXISTS tax_rate_sync_runs" in schema, "tax rate sync run table missing")
+        expect("CREATE TABLE IF NOT EXISTS attention_alerts" in py and "CREATE TABLE IF NOT EXISTS attention_alerts" in schema, "attention alerts table missing")
+        expect("def run_tax_rate_monitor_once(" in py, "tax rate monitor runner missing")
+        expect("def build_attention_console_payload(" in py, "attention console payload builder missing")
+        expect('data-tab="attention"' in html, "attention console tab missing")
+        for token in (
+            'id="attentionRefreshBtn"',
+            'id="attentionRunTaxMonitorBtn"',
+            'id="attentionSummary"',
+            'id="attentionTaxProfile"',
+            'id="attentionOpenTable"',
+            'id="attentionTaxRunsTable"',
+            'id="attentionResolvedTable"',
+        ):
+            expect(token in html, f"attention console ui missing {token}")
+        expect('"/api/v1/attention"' in py, "attention console endpoint missing")
+        expect('"agent": "tax_monitor"' in py, "tax monitor agent missing from status")
+        expect("function loadAttentionConsole(options = {})" in js, "attention console loader missing")
+        expect("function runAttentionTaxMonitor()" in js, "attention tax monitor runner missing")
+        expect("attentionRefreshBtn" in js and "attentionRunTaxMonitorBtn" in js, "attention console buttons not wired")
+
+    check("attention_console_contract", attention_console_contract)
+    def strategy_audit_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        js = (root / "web" / "app.js").read_text(encoding="utf-8")
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        expect("CREATE TABLE IF NOT EXISTS strategy_audit_runs" in py, "strategy audit run table missing")
+        expect("CREATE TABLE IF NOT EXISTS strategy_audit_findings" in py, "strategy audit findings table missing")
+        expect("def run_strategy_audit(conn, refresh_strategy=False):" in py, "strategy audit runner missing")
+        expect("def list_strategy_audit_runs(conn, limit=25):" in py, "strategy audit history helper missing")
+        expect("/api/v1/strategy/audits" in py, "strategy audit list endpoint missing")
+        expect("/api/v1/strategy/audits/run" in py, "strategy audit run endpoint missing")
+        expect('data-tab="strategyaudit"' in html, "strategy audit tab missing in ui")
+        for token in (
+            'id="strategyAuditRunBtn"',
+            'id="strategyAuditRefreshFirst"',
+            'id="strategyAuditRefreshBtn"',
+            'id="strategyAuditSummary"',
+            'id="strategyAuditFindingsTable"',
+            'id="strategyAuditHistoryTable"',
+        ):
+            expect(token in html, f"strategy audit ui missing {token}")
+        expect("function renderStrategyAudit(" in js, "strategy audit renderer missing")
+        expect("function loadStrategyAudit(options = {})" in js, "strategy audit loader missing")
+        expect("function runStrategyAudit()" in js, "strategy audit runner missing in ui")
+        expect("strategyAuditRunBtn" in js and "strategyAuditRefreshBtn" in js, "strategy audit buttons not wired")
+
+    check("strategy_audit_contract", strategy_audit_contract)
     def harvest_planner_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
@@ -449,6 +563,66 @@ def run():
     check("prices_status", lambda: req("GET", "/api/v1/prices/status", expected=200))
     check("prices_sources", lambda: req("GET", "/api/v1/prices/sources?symbol=KITEX&limit=50", expected=200))
     check("llm_config_get", lambda: req("GET", "/api/v1/llm/config", expected=200))
+    def daily_target_plan_runtime():
+        _, out = req("GET", "/api/v1/daily-target/plan?seed_capital=10000&target_profit_pct=1&top_n=3&recalibrate=1", expected=200)
+        summary = out.get("summary") or {}
+        perf = out.get("performance") or {}
+        for key in ("seed_capital", "target_profit_pct", "target_profit_value", "pending_pairs"):
+            expect(key in summary, f"daily target summary missing {key}")
+        for key in ("tax_mode", "equity_stcg_tax_pct", "equity_ltcg_tax_pct", "zerodha_cost_model", "remaining_ltcg_exemption", "equity_ltcg_exemption_limit"):
+            expect(key in summary, f"daily target summary missing {key}")
+        for key in ("starting_capital", "current_compounded_capital", "realized_compounded_capital", "realized_profit_value", "suggested_next_seed_capital"):
+            expect(key in perf, f"daily target performance missing {key}")
+        pairs = out.get("pairs") or []
+        if pairs:
+            sample = pairs[0]
+            for key in ("pair_id", "sell_symbol", "buy_symbol", "buy_target_exit_price", "expected_profit_value", "rotation_score", "reconciliation_status"):
+                expect(key in sample, f"daily target pair missing {key}")
+            pair_id = int(sample.get("pair_id") or 0)
+            expect(pair_id > 0, "daily target pair id invalid")
+            _, updated = req(
+                "PUT",
+                f"/api/v1/daily-target/pairs/{pair_id}",
+                {
+                    "state": "sell_done",
+                    "executed_sell_price": sample.get("sell_ref_price"),
+                    "executed_sell_at": "2026-04-21",
+                    "executed_buy_price": sample.get("buy_ref_price"),
+                    "executed_buy_at": "2026-04-21",
+                    "note": "smoke",
+                },
+                expected=200,
+            )
+            updated_pairs = updated.get("pairs") or []
+            match = next((x for x in updated_pairs if int(x.get("pair_id") or 0) == pair_id), None)
+            expect(match is not None and str(match.get("state") or "").lower() == "executed", "daily target pair update failed")
+            perf_after = updated.get("performance") or {}
+            expect("live_mtm_basis_value" in perf_after, "daily target performance missing net live mtm basis")
+        _, hist = req("GET", "/api/v1/daily-target/history?limit=50", expected=200)
+        expect("items" in hist and "summary" in hist, "daily target history payload incomplete")
+        if hist.get("items"):
+            expect("reconciliation_status" in hist["items"][0], "daily target history missing reconciliation status")
+            expect("current_buy_value" in hist["items"][0], "daily target history missing current buy value")
+        _, hist_filtered = req("GET", "/api/v1/daily-target/history?limit=20&state=closed&date_from=2026-01-01&date_to=2026-12-31", expected=200)
+        hist_summary = hist_filtered.get("summary") or {}
+        expect(hist_summary.get("state_filter") == "closed", "daily target history state filter not echoed")
+        expect(hist_summary.get("date_from") == "2026-01-01", "daily target history from-date filter not echoed")
+        expect(hist_summary.get("date_to") == "2026-12-31", "daily target history to-date filter not echoed")
+
+    check("daily_target_plan", daily_target_plan_runtime)
+    def attention_console_runtime():
+        _, out = req("GET", "/api/v1/attention", expected=200)
+        summary = out.get("summary") or {}
+        tax = out.get("tax_profile") or {}
+        for key in ("open_count", "latest_tax_sync_status"):
+            expect(key in summary, f"attention summary missing {key}")
+        for key in ("stcg_rate_pct", "ltcg_rate_pct", "ltcg_exemption_limit", "remaining_ltcg_exemption"):
+            expect(key in tax, f"attention tax profile missing {key}")
+        expect("open_alerts" in out and "tax_sync_runs" in out, "attention payload missing tables")
+        _, agents = req("GET", "/api/v1/agents/status", expected=200)
+        expect(any(str(x.get("agent") or "") == "tax_monitor" for x in (agents.get("items") or [])), "tax monitor agent missing from agent status")
+
+    check("attention_console", attention_console_runtime)
     def harvest_plan_runtime():
         _, out = req("GET", "/api/v1/harvest/plan?target_loss=250", expected=200)
         summary = out.get("summary") or {}
@@ -524,6 +698,18 @@ def run():
     check("strategy_set_active_not_found", lambda: req("PUT", "/api/v1/strategy/sets/active", {"id": 9999}, expected=404))
     check("strategy_refresh", lambda: req("POST", "/api/v1/strategy/refresh", {}, expected=200))
     check("strategy_insights", lambda: req("GET", "/api/v1/strategy/insights", expected=200))
+    def strategy_audit_runtime():
+        _, out = req("POST", "/api/v1/strategy/audits/run", {"refresh_strategy": False}, expected=200)
+        expect("overall_status" in out and "overall_score" in out, "strategy audit run missing status/score")
+        expect("findings" in out and "stats" in out, "strategy audit run missing findings/stats")
+        _, hist = req("GET", "/api/v1/strategy/audits?limit=10", expected=200)
+        expect("items" in hist and "latest" in hist, "strategy audit list payload incomplete")
+        latest = hist.get("latest") or {}
+        if latest:
+            expect("findings" in latest, "strategy audit latest payload missing findings")
+            expect(str(latest.get("audit_mode") or "") == "heuristic", "strategy audit mode mismatch")
+
+    check("strategy_audit", strategy_audit_runtime)
 
     check(
         "intel_doc_analyze",

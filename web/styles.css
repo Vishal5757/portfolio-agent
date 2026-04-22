@@ -336,6 +336,15 @@ table {
   min-width: 1720px;
 }
 
+#dailyTargetTable {
+  min-width: 2280px;
+}
+
+#dailyTargetSnapshotsTable,
+#dailyTargetHistoryTable {
+  min-width: 1180px;
+}
+
 #softwarePerfActionsTable td:last-child,
 #softwarePerfActionsTable th:last-child {
   min-width: 320px;
@@ -418,6 +427,10 @@ tbody tr:hover {
 
 .neg {
   color: var(--bad);
+}
+
+.warn {
+  color: #b57100;
 }
 
 .pill {
@@ -510,6 +523,19 @@ td .btn {
   padding: 5px 9px;
   border-radius: 8px;
   font-size: 0.8rem;
+}
+
+.daily-target-exec-cell {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) repeat(4, minmax(120px, 1fr)) minmax(180px, 1.2fr) auto;
+  gap: 6px;
+  min-width: 920px;
+}
+
+.daily-target-exec-cell input,
+.daily-target-exec-cell select {
+  min-width: 0;
+  width: 100%;
 }
 
 .assistant-chat-log {
