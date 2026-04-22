@@ -2878,11 +2878,14 @@ function renderDailyTargetPlan(payload) {
   if ($("dailyTargetSummary")) {
     const taxMode = String(summary.tax_mode || "-").replaceAll("_", " ");
     const zerodhaCostModel = String(summary.zerodha_cost_model || "-").replaceAll("_", " ");
+    const effectiveSeed = summary.effective_seed_capital || summary.suggested_next_seed_capital || summary.seed_capital;
+    const effectiveTarget = summary.effective_target_profit_value || summary.target_profit_value;
     $("dailyTargetSummary").innerHTML = `
       <div class="metric">Plan: ${plan.id ? `#${Number(plan.id)}` : "-"}</div>
-      <div class="metric">Seed Capital: ${money(summary.seed_capital)}</div>
+      <div class="metric">Starting Capital: ${money(summary.seed_capital)}</div>
+      <div class="metric pos" title="Compounded capital used for today's pair sizing = Starting Capital + all realized profits">Effective Capital: ${money(effectiveSeed)}</div>
       <div class="metric">Target %: ${pct(summary.target_profit_pct)}</div>
-      <div class="metric ${clsBySign(summary.target_profit_value)}">Target Profit: ${money(summary.target_profit_value)}</div>
+      <div class="metric ${clsBySign(effectiveTarget)}" title="Today's profit target = Effective Capital × Target %">Today's Target Profit: ${money(effectiveTarget)}</div>
       <div class="metric ${clsBySign(summary.projected_pending_profit)}">Projected Pending Profit: ${money(summary.projected_pending_profit)}</div>
       <div class="metric">Pending: ${Number(summary.pending_pairs || 0)}</div>
       <div class="metric">Sell Done: ${Number(summary.sell_done_pairs || 0)}</div>
@@ -2906,11 +2909,11 @@ function renderDailyTargetPlan(payload) {
   }
   if ($("dailyTargetPerformance")) {
     $("dailyTargetPerformance").innerHTML = `
-      <div class="metric">Start Capital: ${money(perf.starting_capital)}</div>
-      <div class="metric">Realized Compounded Capital: ${money(perf.realized_compounded_capital)}</div>
+      <div class="metric">Starting Capital: ${money(perf.starting_capital)}</div>
+      <div class="metric pos" title="Starting Capital + all realized profits to date">Compounded Capital: ${money(perf.realized_compounded_capital)}</div>
       <div class="metric ${clsBySign(perf.realized_profit_value)}">Realized Profit: ${money(perf.realized_profit_value)}</div>
-      <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Profit %: ${pct(perf.realized_profit_pct)}</div>
-      <div class="metric">Current Compounded Capital: ${money(perf.current_compounded_capital)}</div>
+      <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Return %: ${pct(perf.realized_profit_pct)}</div>
+      <div class="metric">MTM Capital (incl. open): ${money(perf.current_compounded_capital)}</div>
       <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L: ${money(perf.compounded_return_value)}</div>
       <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return %: ${pct(perf.compounded_return_pct)}</div>
       <div class="metric">Executed Rotations: ${Number(perf.executed_rotation_count || 0)}</div>
@@ -2924,7 +2927,6 @@ function renderDailyTargetPlan(payload) {
       <div class="metric ${clsBySign(perf.live_mtm_return_pct)}">Net Live Return %: ${pct(perf.live_mtm_return_pct)}</div>
       <div class="metric">Latest Symbol: ${escapeHtml(String(perf.latest_symbol || "-"))}</div>
       <div class="metric">Latest Trade Date: ${escapeHtml(String(perf.latest_trade_date || "-"))}</div>
-      <div class="metric">Next Day Seed Capital: ${money(summary.suggested_next_seed_capital || perf.suggested_next_seed_capital)}</div>
     `;
   }
   const body = $("dailyTargetTable")?.querySelector("tbody");

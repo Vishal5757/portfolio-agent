@@ -4265,6 +4265,12 @@ def _safe_json_dumps(value):
         return json.dumps({}, ensure_ascii=False)
 
 
+def _json_dumps_stable(value):
+    # Backward-compatible alias for older call sites that still reference the
+    # previous helper name in long-running app processes or migrated modules.
+    return _safe_json_dumps(value)
+
+
 def _safe_json_loads(value, fallback):
     try:
         return json.loads(str(value or ""))
@@ -12194,7 +12200,10 @@ def _daily_target_plan_payload(conn, plan_row):
     summary["fy_end_date"] = str(realized_tax.get("fy_end_date") or "")
     summary["realized_ltcg_net_gain"] = round(parse_float(realized_tax.get("ltcg_net_gain"), 0.0), 2)
     summary["remaining_ltcg_exemption"] = round(parse_float(realized_tax.get("ltcg_remaining_exemption"), 0.0), 2)
-    summary["suggested_next_seed_capital"] = round(parse_float(perf.get("suggested_next_seed_capital"), summary["seed_capital"]), 2)
+    effective_seed_capital = round(parse_float(perf.get("suggested_next_seed_capital"), summary["seed_capital"]), 2)
+    summary["suggested_next_seed_capital"] = effective_seed_capital
+    summary["effective_seed_capital"] = effective_seed_capital
+    summary["effective_target_profit_value"] = round(effective_seed_capital * parse_float(summary.get("target_profit_pct"), 1.0) / 100.0, 2)
     return {
         "plan": {
             "id": plan_id,
@@ -12512,16 +12521,18 @@ def _recalibrate_daily_target_plan(conn, plan_row, seed_capital=None, target_pro
     summary["pipeline_switches"] = recalibration_switches
     summary["active_live_price_recalibrated_at"] = now_ts
     summary["generated_pairs_count"] = len(filtered_pairs)
+    # seed_capital is the immutable baseline from plan creation — never overwritten.
+    # target_profit_value is updated to reflect effective_seed * target_pct so the
+    # UI shows today's compounded profit target (effective_seed is already in summary).
     conn.execute(
         """
         UPDATE daily_target_plans
-        SET seed_capital = ?, target_profit_pct = ?, target_profit_value = ?, top_n = ?, updated_at = ?, last_recalibrated_at = ?
+        SET target_profit_pct = ?, target_profit_value = ?, top_n = ?, updated_at = ?, last_recalibrated_at = ?
         WHERE id = ?
         """,
         (
-            round(parse_float(summary.get("seed_capital"), 0.0), 2),
             round(parse_float(summary.get("target_profit_pct"), 0.0), 2),
-            round(parse_float(summary.get("target_profit_value"), 0.0), 2),
+            round(parse_float(effective_seed * target_pct_effective / 100.0, 0.0), 2),
             int(parse_float(summary.get("top_n"), 0.0)),
             now_ts,
             now_ts,
