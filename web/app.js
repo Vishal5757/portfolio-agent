@@ -3068,8 +3068,8 @@ async function loadDailyTargetPlan(options = {}) {
   const topN = Math.max(1, Math.min(10, Number($("dailyTargetTopN")?.value || 5)));
   if ($("dailyTargetStatusText")) {
     $("dailyTargetStatusText").textContent = recalibrate
-      ? `Daily target recalibrating: ${new Date().toLocaleString()}`
-      : `Daily target loading: ${new Date().toLocaleString()}`;
+      ? `Refreshing ideas: ${new Date().toLocaleString()}`
+      : `Loading: ${new Date().toLocaleString()}`;
   }
   const params = new URLSearchParams();
   params.set("seed_capital", String(Number(seedCapital.toFixed(2))));
@@ -3082,8 +3082,8 @@ async function loadDailyTargetPlan(options = {}) {
     await loadDailyTargetHistory();
     if ($("dailyTargetStatusText")) {
       $("dailyTargetStatusText").textContent = recalibrate
-        ? `Daily target recalibrated: ${new Date().toLocaleString()}`
-        : `Daily target loaded: ${new Date().toLocaleString()}`;
+        ? `Ideas refreshed: ${new Date().toLocaleString()}`
+        : `Loaded: ${new Date().toLocaleString()}`;
     }
   } catch (e) {
     const meta = normalizeUiError(e, "DAILY_TARGET_PLAN_FAILED");
@@ -5200,8 +5200,8 @@ function bindEvents() {
   registerButton("rebalanceResetLotBtn", resetRebalanceLot, { actionName: "Reset Rebalance Lot", errorCode: "REBALANCE_RESET_FAILED" });
   registerButton("rebalanceSaveGuardsBtn", saveRebalanceGuards, { actionName: "Save Min/Max Limits", errorCode: "REBALANCE_GUARD_SAVE_FAILED" });
   registerButton("rebalanceHistoryRefreshBtn", () => loadRebalanceClosedHistory({ throwOnError: true }), { actionName: "Refresh Closed History", errorCode: "REBALANCE_CLOSED_HISTORY_FAILED" });
-  registerButton("dailyTargetRefreshBtn", () => loadDailyTargetPlan({ throwOnError: true, recalibrate: true }), { actionName: "Recalibrate Daily Target", errorCode: "DAILY_TARGET_PLAN_FAILED" });
-  registerButton("dailyTargetResetBtn", resetDailyTargetPlan, { actionName: "Start New Daily Target Cycle", errorCode: "DAILY_TARGET_RESET_FAILED" });
+  registerButton("dailyTargetRefreshBtn", () => loadDailyTargetPlan({ throwOnError: true, recalibrate: true }), { actionName: "Refresh Daily Target Ideas", errorCode: "DAILY_TARGET_PLAN_FAILED" });
+  registerButton("dailyTargetResetBtn", resetDailyTargetPlan, { actionName: "Start New Day — Fresh Ideas", errorCode: "DAILY_TARGET_RESET_FAILED" });
   registerButton("harvestRefreshBtn", () => loadHarvestPlan({ throwOnError: true }), { actionName: "Refresh Harvest Plan", errorCode: "HARVEST_PLAN_FAILED" });
   registerButton("harvestRunAnalysisBtn", () => loadHarvestPlan({ throwOnError: true, runLlm: true }), { actionName: "Run Harvest Dynamic Analysis", errorCode: "HARVEST_ANALYSIS_FAILED" });
   registerButton("lossLotsRefreshBtn", () => loadLossLots({ throwOnError: true }), { actionName: "Refresh Loss Lots", errorCode: "LOSS_LOTS_FAILED" });

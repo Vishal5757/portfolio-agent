@@ -804,16 +804,16 @@
         <input id="dailyTargetSeedCapital" type="number" min="1000" step="100" value="10000">
         <label for="dailyTargetProfitPct">Target Profit %</label>
         <input id="dailyTargetProfitPct" type="number" min="0.1" max="25" step="0.1" value="1">
-        <label for="dailyTargetTopN">Ideas</label>
-        <input id="dailyTargetTopN" type="number" min="1" max="10" step="1" value="5">
-        <button id="dailyTargetRefreshBtn" class="btn secondary">Recalibrate Plan</button>
-        <button id="dailyTargetResetBtn" class="btn">Start New Cycle</button>
+        <label for="dailyTargetTopN" title="Maximum number of trade ideas to generate for the day. Each idea is a sell + buy pair ranked by expected profit after costs and tax.">Max Ideas / Day</label>
+        <input id="dailyTargetTopN" type="number" min="1" max="10" step="1" value="5" title="Maximum trade suggestions to show (1–10). Increase to see more alternatives; decrease to focus on the highest-ranked pair only.">
+        <button id="dailyTargetRefreshBtn" class="btn secondary" title="Re-score all pending ideas against current prices. Does not discard in-progress trades.">Refresh Ideas</button>
+        <button id="dailyTargetResetBtn" class="btn" title="Close the current day's plan and generate a completely fresh set of ideas sized at today's compounded capital. Use this each morning to start a new day.">New Day — Fresh Ideas</button>
         <span id="dailyTargetStatusText" class="metric">Daily target: -</span>
       </div>
       <div id="dailyTargetSummary" class="perf-summary"></div>
       <div id="dailyTargetPerformance" class="perf-summary"></div>
       <div class="table-wrap">
-        <div class="table-title">Active Rotation Queue</div>
+        <div class="table-title">Active Rotation Queue — Today's Trade Ideas</div>
         <table id="dailyTargetTable">
           <thead>
             <tr>
