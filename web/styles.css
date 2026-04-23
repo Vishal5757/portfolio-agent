@@ -686,3 +686,17 @@ td .btn {
   text-align: right;
   padding-right: 14px;
 }
+
+.exit-now {
+  color: #fff;
+  background: #c0392b;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+  animation: exit-pulse 1.2s ease-in-out infinite;
+}
+@keyframes exit-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}

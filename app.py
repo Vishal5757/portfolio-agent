@@ -11290,8 +11290,11 @@ def _daily_target_trade_match(conn, symbol, side, exec_date, qty, price, exclude
         if tid in blocked:
             continue
         q_gap = abs(parse_float(r["quantity"], 0.0) - q)
-        p_gap = abs(parse_float(r["price"], 0.0) - p) if p > 0 else 0.0
         if q_gap > max(0.02, q * 0.02):
+            continue
+        trade_price = parse_float(r["price"], 0.0)
+        p_gap = abs(trade_price - p) if p > 0 else 0.0
+        if p > 0 and trade_price > 0 and p_gap / max(p, 1e-9) > 0.05:
             continue
         score = (q_gap * 1000.0) + p_gap
         if best is None or score < best[0]:
@@ -11352,19 +11355,20 @@ def reconcile_daily_target_trade_links(conn, plan_id=None):
             status = "matched"
         elif sell_match or buy_match:
             status = "partial"
+        new_sell_id = int(parse_float((sell_match or {}).get("trade_id"), 0.0)) or None
+        new_buy_id = int(parse_float((buy_match or {}).get("trade_id"), 0.0)) or None
+        prev_sell_id = int(parse_float(r["matched_sell_trade_id"], 0.0)) or None
+        prev_buy_id = int(parse_float(r["matched_buy_trade_id"], 0.0)) or None
+        prev_status = str(r["reconciliation_status"] or "unmatched").strip().lower()
+        if new_sell_id == prev_sell_id and new_buy_id == prev_buy_id and status == prev_status:
+            continue
         conn.execute(
             """
             UPDATE daily_target_plan_pairs
-            SET matched_sell_trade_id = ?, matched_buy_trade_id = ?, reconciliation_status = ?, updated_at = COALESCE(updated_at, ?)
+            SET matched_sell_trade_id = ?, matched_buy_trade_id = ?, reconciliation_status = ?, updated_at = ?
             WHERE id = ?
             """,
-            (
-                int(parse_float((sell_match or {}).get("trade_id"), 0.0)) or None,
-                int(parse_float((buy_match or {}).get("trade_id"), 0.0)) or None,
-                status,
-                now_iso(),
-                pair_id,
-            ),
+            (new_sell_id, new_buy_id, status, now_iso(), pair_id),
         )
 
 
@@ -11435,6 +11439,12 @@ def sync_daily_target_positions(conn, pair_id):
     sell_symbol = symbol_upper(row["sell_symbol"])
     if sell_qty > 0 and sell_price > 0 and sell_at and sell_symbol:
         remaining = sell_qty
+        tax_cfg = get_tax_profile_config(conn)
+        total_sell_value = round(sell_price * sell_qty, 2)
+        exit_costs = _daily_target_zerodha_delivery_costs(
+            total_sell_value, exchange="NSE", side="SELL", include_dp_on_sell=True, tax_cfg=tax_cfg
+        )
+        exit_cost_total = parse_float(exit_costs.get("total"), 0.0)
         open_positions = conn.execute(
             """
             SELECT id, qty
@@ -11456,7 +11466,13 @@ def sync_daily_target_positions(conn, pair_id):
             if pos_qty <= 1e-9:
                 continue
             close_qty = min(pos_qty, remaining)
-            realized_add = round((sell_price - pos_entry_price) * close_qty, 2) if pos_entry_price > 0 else 0.0
+            if pos_entry_price > 0:
+                gross_add = round((sell_price - pos_entry_price) * close_qty, 2)
+                # prorate exit costs for the portion being closed
+                cost_share = round(exit_cost_total * (close_qty / max(sell_qty, 1e-9)), 2)
+                realized_add = round(gross_add - cost_share, 2)
+            else:
+                realized_add = 0.0
             if pos_qty <= (remaining + 1e-9):
                 conn.execute(
                     """
