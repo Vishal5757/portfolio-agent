@@ -11658,6 +11658,13 @@ def compute_daily_target_performance(conn):
         latest_balance = realized_compounded_capital
     compounded_return_value = round(latest_balance - starting_capital, 2)
     compounded_return_pct = round((compounded_return_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0
+    # Post-tax estimate: DT trades are all short-term (STCG at 20%).
+    # Tax applies only to the gain portion; losses are not taxed.
+    stcg_rate = DAILY_TARGET_EQUITY_STCG_TAX_PCT / 100.0
+    realized_stcg_tax_estimate = round(max(0.0, realized_profit_value) * stcg_rate, 2)
+    realized_profit_post_tax = round(realized_profit_value - realized_stcg_tax_estimate, 2)
+    compounded_capital_post_tax = round(starting_capital + realized_profit_post_tax, 2)
+    compounded_return_pct_post_tax = round((realized_profit_post_tax / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0
     return {
         "starting_capital": round(starting_capital, 2),
         "current_compounded_capital": round(latest_balance, 2),
@@ -11666,6 +11673,10 @@ def compute_daily_target_performance(conn):
         "realized_compounded_capital": realized_compounded_capital,
         "realized_profit_value": realized_profit_value,
         "realized_profit_pct": round((realized_profit_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0,
+        "realized_stcg_tax_estimate": realized_stcg_tax_estimate,
+        "realized_profit_post_tax": realized_profit_post_tax,
+        "compounded_capital_post_tax": compounded_capital_post_tax,
+        "compounded_return_pct_post_tax": compounded_return_pct_post_tax,
         "executed_rotation_count": executed_rotation_count,
         "open_position_count": len(open_positions),
         "cumulative_sell_value": round(cumulative_sell_value, 2),
@@ -17514,6 +17525,38 @@ def _portfolio_return_metrics(conn, market_value, cash_balance):
     }
 
 
+def _compute_portfolio_unrealized_tax_estimate(conn, realized_tax_summary, tax_cfg, split_map=None):
+    """Estimate income tax liability on all open equity lots if closed today."""
+    symbols = [
+        r["symbol"]
+        for r in conn.execute(
+            "SELECT h.symbol FROM holdings h LEFT JOIN instruments i ON UPPER(i.symbol)=UPPER(h.symbol) WHERE UPPER(COALESCE(i.asset_class,'EQUITY'))<>'GOLD' AND COALESCE(h.qty,0)>0"
+        ).fetchall()
+    ]
+    stcg_unrealized_gain = 0.0
+    ltcg_unrealized_gain = 0.0
+    for sym in symbols:
+        for lot in open_lot_tax_bucket_rows(conn, sym, split_map=split_map):
+            upl = parse_float(lot.get("unrealized_pnl"), 0.0)
+            if upl <= 0:
+                continue
+            if str(lot.get("tax_bucket") or "STCG").upper() == "LTCG":
+                ltcg_unrealized_gain += upl
+            else:
+                stcg_unrealized_gain += upl
+    stcg_rate = _daily_target_equity_tax_rate("STCG", tax_cfg)
+    ltcg_rate = _daily_target_equity_tax_rate("LTCG", tax_cfg)
+    ltcg_remaining_exemption = max(0.0, parse_float(realized_tax_summary.get("ltcg_remaining_exemption"), parse_float(tax_cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT)))
+    ltcg_taxable = max(0.0, ltcg_unrealized_gain - ltcg_remaining_exemption)
+    return {
+        "stcg_unrealized_gain": round(stcg_unrealized_gain, 2),
+        "ltcg_unrealized_gain": round(ltcg_unrealized_gain, 2),
+        "stcg_unrealized_tax": round(stcg_unrealized_gain * stcg_rate, 2),
+        "ltcg_unrealized_tax": round(ltcg_taxable * ltcg_rate, 2),
+        "total_unrealized_tax": round(stcg_unrealized_gain * stcg_rate + ltcg_taxable * ltcg_rate, 2),
+    }
+
+
 def portfolio_summary(conn):
     row = conn.execute(
         """
@@ -17578,6 +17621,19 @@ def portfolio_summary(conn):
             prev_day_value += qty * prev_close
     today_change_pct = (today_pnl / prev_day_value * 100.0) if prev_day_value > 0 else 0.0
     return_metrics = _portfolio_return_metrics(conn, market, parse_float(cash_row["cash_balance"], 0.0))
+    # Post-tax estimates: FY realized tax + estimated unrealized tax if closed today
+    tax_cfg = get_tax_profile_config(conn)
+    fy_tax = compute_realized_equity_tax_summary(conn)
+    split_map = load_split_map(conn)
+    unreal_tax = _compute_portfolio_unrealized_tax_estimate(conn, fy_tax, tax_cfg, split_map=split_map)
+    stcg_rate = _daily_target_equity_tax_rate("STCG", tax_cfg)
+    ltcg_rate = _daily_target_equity_tax_rate("LTCG", tax_cfg)
+    ltcg_taxable = max(0.0, parse_float(fy_tax.get("ltcg_net_gain"), 0.0) - max(0.0, parse_float(fy_tax.get("ltcg_remaining_exemption"), 0.0)))
+    fy_realized_tax = round(parse_float(fy_tax.get("stcg_net_gain"), 0.0) * stcg_rate + ltcg_taxable * ltcg_rate, 2)
+    total_unrealized_tax = parse_float(unreal_tax.get("total_unrealized_tax"), 0.0)
+    estimated_total_tax = round(fy_realized_tax + total_unrealized_tax, 2)
+    post_tax_total_pnl = round(total_pnl - estimated_total_tax, 2)
+    post_tax_return_pct = round(post_tax_total_pnl / hand_invested * 100.0, 2) if hand_invested > 0 else 0.0
     return {
         "invested": round(hand_invested, 2),
         "hand_invested": round(hand_invested, 2),
@@ -17593,6 +17649,14 @@ def portfolio_summary(conn):
         "cagr_pct": round(parse_float(return_metrics.get("cagr_pct"), 0.0), 2),
         "xirr_pct": round(parse_float(return_metrics.get("xirr_pct"), 0.0), 2),
         "cash_balance": round(parse_float(cash_row["cash_balance"], 0.0), 2),
+        "fy_label": str(fy_tax.get("fy_label") or ""),
+        "fy_stcg_net_gain": round(parse_float(fy_tax.get("stcg_net_gain"), 0.0), 2),
+        "fy_ltcg_net_gain": round(parse_float(fy_tax.get("ltcg_net_gain"), 0.0), 2),
+        "fy_realized_tax": round(fy_realized_tax, 2),
+        "estimated_unrealized_tax": round(total_unrealized_tax, 2),
+        "estimated_total_tax": round(estimated_total_tax, 2),
+        "post_tax_total_pnl": post_tax_total_pnl,
+        "post_tax_return_pct": post_tax_return_pct,
         "as_of": now_iso(),
     }
 

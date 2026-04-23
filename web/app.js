@@ -1499,8 +1499,13 @@ function renderKpis(summary) {
     ["Today's Change %", pct(summary.today_change_pct), clsBySign(summary.today_change_pct)],
     ["Realized P/L", money(summary.realized_pnl), clsBySign(summary.realized_pnl)],
     ["Unrealized P/L", money(summary.unrealized_pnl), clsBySign(summary.unrealized_pnl)],
-    ["Total P/L", money(summary.total_pnl), clsBySign(summary.total_pnl)],
+    ["Total P/L (Pre-Tax)", money(summary.total_pnl), clsBySign(summary.total_pnl)],
     ["Total Return (Hand %)", pct(summary.total_return_pct), clsBySign(summary.total_return_pct)],
+    ["FY Realized Tax", money(summary.fy_realized_tax || 0), "neg"],
+    ["Est. Unrealized Tax", money(summary.estimated_unrealized_tax || 0), "neg"],
+    ["Total Tax Liability", money(summary.estimated_total_tax || 0), "neg"],
+    ["Post-Tax Total P/L", money(summary.post_tax_total_pnl), clsBySign(summary.post_tax_total_pnl)],
+    ["Post-Tax Return (Hand %)", pct(summary.post_tax_return_pct), clsBySign(summary.post_tax_return_pct)],
     ["Total Return (Deployment %)", pct(summary.deployment_return_pct || 0), clsBySign(summary.deployment_return_pct || 0)],
     ["CAGR", pct(summary.cagr_pct || 0), clsBySign(summary.cagr_pct || 0)],
     ["XIRR", pct(summary.xirr_pct || 0), clsBySign(summary.xirr_pct || 0)],
@@ -2897,8 +2902,12 @@ function renderDailyTargetPlan(payload) {
       <div class="metric ${clsBySign(perf.realized_profit_value)}">Realized Profit: ${money(perf.realized_profit_value)}</div>
       <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Return %: ${pct(perf.realized_profit_pct)}</div>
       <div class="metric">MTM Capital (incl. open): ${money(perf.current_compounded_capital)}</div>
-      <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L: ${money(perf.compounded_return_value)}</div>
-      <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return %: ${pct(perf.compounded_return_pct)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L (Pre-Tax): ${money(perf.compounded_return_value)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return % (Pre-Tax): ${pct(perf.compounded_return_pct)}</div>
+      <div class="metric neg" title="Estimated STCG at 20% on realized gains">Est. STCG Tax: ${money(perf.realized_stcg_tax_estimate || 0)}</div>
+      <div class="metric ${clsBySign(perf.realized_profit_post_tax)}">Post-Tax Realized Profit: ${money(perf.realized_profit_post_tax || 0)}</div>
+      <div class="metric pos" title="Starting Capital + post-tax realized profits">Post-Tax Compounded Capital: ${money(perf.compounded_capital_post_tax || 0)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_pct_post_tax)}">Post-Tax Strategy Return %: ${pct(perf.compounded_return_pct_post_tax || 0)}</div>
       <div class="metric">Executed Rotations: ${Number(perf.executed_rotation_count || 0)}</div>
       <div class="metric">Open Tracked Positions: ${Number(perf.open_position_count || 0)}</div>
       <div class="metric">Cumulative Sell Value: ${money(perf.cumulative_sell_value)}</div>
@@ -3057,7 +3066,46 @@ async function loadDailyTargetPlan(options = {}) {
   params.set("recalibrate", recalibrate ? "1" : "0");
   try {
     const res = await api(`/api/v1/daily-target/plan?${params.toString()}`);
-    renderDailyTargetPlan(res || {});
+    // On live-poll refreshes (recalibrate=false), preserve any in-progress
+    // field values so typing is not clobbered. If focus is inside the table,
+    // skip the re-render entirely to avoid interrupting active input.
+    if (!recalibrate) {
+      const table = $("dailyTargetTable");
+      const focused = table?.contains(document.activeElement);
+      if (focused) {
+        // User is actively editing — skip render, just update status
+      } else {
+        // Save filled-in fields keyed by pair ID before re-render
+        const saved = {};
+        (table?.querySelectorAll(".daily-target-save-btn") || []).forEach((btn) => {
+          const pid = btn.getAttribute("data-pair-id");
+          const row = btn.closest("tr");
+          if (!row) return;
+          const sp = row.querySelector(".daily-target-sell-price")?.value || "";
+          const sd = row.querySelector(".daily-target-sell-date")?.value || "";
+          const bp = row.querySelector(".daily-target-buy-price")?.value || "";
+          const bd = row.querySelector(".daily-target-buy-date")?.value || "";
+          const nt = row.querySelector(".daily-target-note")?.value || "";
+          const st = row.querySelector(".daily-target-state-select")?.value || "";
+          if (sp || sd || bp || bd || nt) saved[pid] = { sp, sd, bp, bd, nt, st };
+        });
+        renderDailyTargetPlan(res || {});
+        // Restore any values the user had typed
+        Object.entries(saved).forEach(([pid, v]) => {
+          const btn = table?.querySelector(`[data-pair-id="${pid}"]`);
+          const row = btn?.closest("tr");
+          if (!row) return;
+          if (v.sp) { const el = row.querySelector(".daily-target-sell-price"); if (el) el.value = v.sp; }
+          if (v.sd) { const el = row.querySelector(".daily-target-sell-date"); if (el) el.value = v.sd; }
+          if (v.bp) { const el = row.querySelector(".daily-target-buy-price"); if (el) el.value = v.bp; }
+          if (v.bd) { const el = row.querySelector(".daily-target-buy-date"); if (el) el.value = v.bd; }
+          if (v.nt) { const el = row.querySelector(".daily-target-note"); if (el) el.value = v.nt; }
+          if (v.st) { const el = row.querySelector(".daily-target-state-select"); if (el) el.value = v.st; }
+        });
+      }
+    } else {
+      renderDailyTargetPlan(res || {});
+    }
     await loadDailyTargetHistory();
     if ($("dailyTargetStatusText")) {
       $("dailyTargetStatusText").textContent = recalibrate
