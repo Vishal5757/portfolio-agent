@@ -12,6 +12,7 @@ data/
 
 .env
 .venv/
+.python312/
 venv/
 
 *.db

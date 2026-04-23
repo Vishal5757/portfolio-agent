@@ -4439,6 +4439,14 @@ def build_agents_status(conn):
         LIMIT 1
         """
     ).fetchone()
+    tax_latest = conn.execute(
+        """
+        SELECT created_at, status, detail, error
+        FROM tax_rate_sync_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
 
     hist_symbols = 0
     hist_to = ""
@@ -4788,6 +4796,7 @@ def refresh_attention_alerts(conn):
 
 def build_attention_console_payload(conn):
     ctx = refresh_attention_alerts(conn)
+    realized_tax = compute_realized_equity_tax_summary(conn)
     alerts = list_attention_alerts(conn, status=None, limit=120)
     open_alerts = [x for x in alerts if str(x.get("status") or "").lower() == "open"]
     resolved_alerts = [x for x in alerts if str(x.get("status") or "").lower() == "resolved"][:25]
@@ -4804,6 +4813,13 @@ def build_attention_console_payload(conn):
     ).fetchone()
     latest_sync_item = dict(latest_sync) if latest_sync else {}
     return {
+        "tax_profile": {
+            **dict(ctx.get("tax_profile") or {}),
+            **realized_tax,
+            "remaining_ltcg_exemption": round(
+                parse_float(realized_tax.get("ltcg_remaining_exemption"), 0.0), 2
+            ),
+        },
         "summary": {
             "open_count": len(open_alerts),
             "resolved_count": len(resolved_alerts),
@@ -4812,10 +4828,6 @@ def build_attention_console_payload(conn):
             "info_open": sev_counts.get("info", 0),
             "latest_tax_sync_at": str(latest_sync_item.get("created_at") or ""),
             "latest_tax_sync_status": str(latest_sync_item.get("status") or ""),
-        },
-        "tax_profile": {
-            **dict(ctx.get("tax_profile") or {}),
-            **compute_realized_equity_tax_summary(conn),
         },
         "tax_monitor": dict(ctx.get("tax_monitor") or {}),
         "open_alerts": open_alerts,
@@ -13140,7 +13152,7 @@ def _safe_parse_improvement_proposal(path_s):
         safe_root = (get_current_tenant_data_dir() / "agent_improvements").resolve()
     except Exception:
         return {}
-    root_s = str(safe_root).rstrip("\/").lower()
+    root_s = str(safe_root).rstrip("\\/").lower()
     path_s_norm = str(path).lower()
     if not (path_s_norm == root_s or path_s_norm.startswith(root_s + "\\")):
         return {}
