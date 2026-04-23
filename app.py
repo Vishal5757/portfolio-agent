@@ -11551,9 +11551,7 @@ def _daily_target_virtual_open_positions(conn):
         SELECT p.symbol, SUM(p.qty) AS qty,
                SUM(p.qty * p.entry_price) / NULLIF(SUM(p.qty), 0) AS avg_entry_price
         FROM daily_target_positions p
-        JOIN daily_target_plan_pairs dp ON dp.id = p.source_pair_id
         WHERE LOWER(p.status) = 'open'
-          AND LOWER(COALESCE(dp.reconciliation_status,'')) <> 'matched'
         GROUP BY p.symbol
         ORDER BY p.symbol
         """
@@ -11588,8 +11586,6 @@ def compute_daily_target_performance(conn):
             "realized_profit_value": 0.0,
             "realized_profit_pct": 0.0,
             "executed_rotation_count": 0,
-            "matched_rotation_count": 0,
-            "unmatched_rotation_count": 0,
             "cumulative_sell_value": 0.0,
             "cumulative_buy_value": 0.0,
             "live_mtm_pnl": 0.0,
@@ -11602,8 +11598,6 @@ def compute_daily_target_performance(conn):
     cumulative_sell_value = 0.0
     cumulative_buy_value = 0.0
     executed_rotation_count = 0
-    matched_rotation_count = 0
-    unmatched_rotation_count = 0
     latest_balance = starting_capital
     latest_symbol = ""
     latest_trade_date = ""
@@ -11626,10 +11620,6 @@ def compute_daily_target_performance(conn):
             latest_row = r
             latest_trade_date = str(r["executed_buy_at"] or r["executed_sell_at"] or r["updated_at"] or "")[:10]
             latest_symbol = str(r["buy_symbol"] or "")
-            if str(r["reconciliation_status"] or "").strip().lower() == "matched":
-                matched_rotation_count += 1
-            else:
-                unmatched_rotation_count += 1
     pos_rows = conn.execute(
         """
         SELECT symbol, qty, entry_value, realized_profit, status
@@ -11677,8 +11667,6 @@ def compute_daily_target_performance(conn):
         "realized_profit_value": realized_profit_value,
         "realized_profit_pct": round((realized_profit_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0,
         "executed_rotation_count": executed_rotation_count,
-        "matched_rotation_count": matched_rotation_count,
-        "unmatched_rotation_count": unmatched_rotation_count,
         "open_position_count": len(open_positions),
         "cumulative_sell_value": round(cumulative_sell_value, 2),
         "cumulative_buy_value": round(cumulative_buy_value, 2),
@@ -12198,7 +12186,6 @@ def _daily_target_plan_payload(conn, plan_row):
             "performance": perf,
         }
     plan_id = int(parse_float(plan_row.get("id"), 0.0))
-    reconcile_daily_target_trade_links(conn, plan_id=plan_id)
     pair_rows = conn.execute(
         """
         SELECT *
@@ -12241,9 +12228,6 @@ def _daily_target_plan_payload(conn, plan_row):
                 "current_sell_ref_price": round(parse_float(live.get("current_sell_ref_price"), r["current_sell_ref_price"]), 4),
                 "current_buy_ref_price": round(parse_float(live.get("current_buy_ref_price"), r["current_buy_ref_price"]), 4),
                 "target_progress_pct": round(parse_float(live.get("target_progress_pct"), r["target_progress_pct"]), 2),
-                "matched_sell_trade_id": int(parse_float(r["matched_sell_trade_id"], 0.0)) or None,
-                "matched_buy_trade_id": int(parse_float(r["matched_buy_trade_id"], 0.0)) or None,
-                "reconciliation_status": str(r["reconciliation_status"] or "unmatched"),
                 "executed_sell_price": (
                     None if r["executed_sell_price"] is None else round(parse_float(r["executed_sell_price"], 0.0), 4)
                 ),
@@ -12778,7 +12762,6 @@ def update_daily_target_pair(conn, pair_id, state="pending", note="", executed_s
     )
     if effective_state == "executed":
         sync_daily_target_positions(conn, iid)
-    reconcile_daily_target_trade_links(conn, plan_id=int(parse_float(row["plan_id"], 0.0)))
     active = get_active_daily_target_plan(conn)
     payload = _daily_target_plan_payload(conn, active)
     payload["updated_pair_id"] = iid
@@ -12786,7 +12769,6 @@ def update_daily_target_pair(conn, pair_id, state="pending", note="", executed_s
 
 
 def list_daily_target_plan_history(conn, limit=120, date_from=None, date_to=None, state_filter=None):
-    reconcile_daily_target_trade_links(conn)
     lim = max(1, min(500, int(parse_float(limit, 120))))
     df = str(date_from or "").strip()
     dt_to = str(date_to or "").strip()
@@ -12812,8 +12794,7 @@ def list_daily_target_plan_history(conn, limit=120, date_from=None, date_to=None
         f"""
         SELECT p.id AS pair_id, p.plan_id, p.priority_rank, p.state, p.sell_symbol, p.sell_qty, p.sell_ref_price,
                p.sell_trade_value, p.buy_symbol, p.buy_qty, p.buy_ref_price, p.buy_trade_value, p.buy_target_exit_price,
-               p.expected_profit_value, p.rotation_score, p.matched_sell_trade_id, p.matched_buy_trade_id,
-               p.reconciliation_status, p.executed_sell_price, p.executed_sell_at, p.executed_buy_price,
+               p.expected_profit_value, p.rotation_score, p.executed_sell_price, p.executed_sell_at, p.executed_buy_price,
                p.executed_buy_at, p.completion_note, p.updated_at, dp.seed_capital, dp.target_profit_pct, dp.status AS plan_status,
                dp.created_at AS plan_created_at, dp.closed_at AS plan_closed_at
         FROM daily_target_plan_pairs p
@@ -12858,9 +12839,6 @@ def list_daily_target_plan_history(conn, limit=120, date_from=None, date_to=None
                 "buy_target_exit_price": round(parse_float(r["buy_target_exit_price"], 0.0), 4),
                 "expected_profit_value": round(parse_float(r["expected_profit_value"], 0.0), 2),
                 "rotation_score": round(parse_float(r["rotation_score"], 0.0), 4),
-                "matched_sell_trade_id": int(parse_float(r["matched_sell_trade_id"], 0.0)) or None,
-                "matched_buy_trade_id": int(parse_float(r["matched_buy_trade_id"], 0.0)) or None,
-                "reconciliation_status": str(r["reconciliation_status"] or "unmatched"),
                 "executed_sell_price": (None if r["executed_sell_price"] is None else round(parse_float(r["executed_sell_price"], 0.0), 4)),
                 "executed_sell_at": str(r["executed_sell_at"] or ""),
                 "executed_sell_value": round(parse_float(r["executed_sell_price"], 0.0) * parse_float(r["sell_qty"], 0.0), 2) if parse_float(r["executed_sell_price"], 0.0) > 0 else None,
@@ -12892,9 +12870,6 @@ def list_daily_target_plan_history(conn, limit=120, date_from=None, date_to=None
         "buy_done": sum(1 for x in items if str(x.get("state") or "").lower() == "buy_done"),
         "skipped": sum(1 for x in items if str(x.get("state") or "").lower() == "skipped"),
         "replaced": sum(1 for x in items if str(x.get("state") or "").lower() == "replaced"),
-        "matched": sum(1 for x in items if str(x.get("reconciliation_status") or "").lower() == "matched"),
-        "partial": sum(1 for x in items if str(x.get("reconciliation_status") or "").lower() == "partial"),
-        "unmatched": sum(1 for x in items if str(x.get("reconciliation_status") or "").lower() == "unmatched"),
     }
     return {"items": items, "summary": summary}
 
@@ -19244,7 +19219,6 @@ class AppHandler(SimpleHTTPRequestHandler):
                     (trade_symbol, side, trade_date, qty, price, amount, ext_trade_id, notes),
                 )
                 trade_id = cur.lastrowid
-                reconcile_daily_target_trade_links(conn)
                 conn.commit()
             recompute_holdings_and_signals()
             json_response(
@@ -19399,7 +19373,6 @@ class AppHandler(SimpleHTTPRequestHandler):
                     (trade_symbol, side, trade_date, qty, price, amount, notes),
                 )
                 trade_id = cur.lastrowid
-                reconcile_daily_target_trade_links(conn)
                 conn.commit()
             recompute_holdings_and_signals()
             json_response(self, {"ok": True, "trade_id": trade_id, "symbol": trade_symbol})
@@ -19461,8 +19434,6 @@ class AppHandler(SimpleHTTPRequestHandler):
             save_path.write_bytes(raw)
             stats = import_tradebook_bytes(raw, filename=safe_name, collect_skipped=include_skipped)
             with db_connect() as conn:
-                reconcile_daily_target_trade_links(conn)
-                conn.commit()
                 summary = portfolio_summary(conn)
             json_response(self, {"ok": True, "stats": stats, "summary": summary})
             return

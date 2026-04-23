@@ -157,6 +157,66 @@ def run():
         if not cond:
             raise AssertionError(msg)
 
+    def upsert_symbol(conn, symbol, qty, avg_cost, ltp, exchange="NSE", asset_class="EQUITY"):
+        sym = str(symbol or "").strip().upper()
+        invested = round(float(qty) * float(avg_cost), 2)
+        market_value = round(float(qty) * float(ltp), 2)
+        unrealized = round(market_value - invested, 2)
+        total_return = round((unrealized / invested) * 100.0, 2) if invested > 0 else 0.0
+        stamp = app.now_iso()
+        conn.execute(
+            """
+            INSERT INTO instruments(symbol, exchange, asset_class, active)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(symbol) DO UPDATE SET exchange=excluded.exchange, asset_class=excluded.asset_class, active=1
+            """,
+            (sym, exchange, asset_class),
+        )
+        conn.execute(
+            """
+            INSERT INTO holdings(symbol, qty, avg_cost, invested, market_value, realized_pnl, unrealized_pnl, total_return_pct, updated_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+              qty=excluded.qty,
+              avg_cost=excluded.avg_cost,
+              invested=excluded.invested,
+              market_value=excluded.market_value,
+              realized_pnl=excluded.realized_pnl,
+              unrealized_pnl=excluded.unrealized_pnl,
+              total_return_pct=excluded.total_return_pct,
+              updated_at=excluded.updated_at
+            """,
+            (sym, qty, avg_cost, invested, market_value, unrealized, total_return, stamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO latest_prices(symbol, ltp, change_abs, updated_at)
+            VALUES (?, ?, 0, ?)
+            ON CONFLICT(symbol) DO UPDATE SET ltp=excluded.ltp, change_abs=excluded.change_abs, updated_at=excluded.updated_at
+            """,
+            (sym, ltp, stamp),
+        )
+
+    def clear_symbol(conn, symbol):
+        sym = str(symbol or "").strip().upper()
+        conn.execute("DELETE FROM trades WHERE UPPER(symbol) = ?", (sym,))
+        conn.execute("DELETE FROM holdings WHERE UPPER(symbol) = ?", (sym,))
+        conn.execute("DELETE FROM latest_prices WHERE UPPER(symbol) = ?", (sym,))
+        conn.execute("DELETE FROM instruments WHERE UPPER(symbol) = ?", (sym,))
+
+    def insert_trade(conn, symbol, side, trade_date, quantity, price, notes="smoke"):
+        sym = str(symbol or "").strip().upper()
+        side_u = str(side or "").strip().upper()
+        qty = float(quantity)
+        px = float(price)
+        conn.execute(
+            """
+            INSERT INTO trades(symbol, side, trade_date, quantity, price, amount, source, notes)
+            VALUES (?, ?, ?, ?, ?, ?, 'smoke', ?)
+            """,
+            (sym, side_u, str(trade_date), qty, px, round(qty * px, 2), str(notes or "")),
+        )
+
     check("health", lambda: req("GET", "/api/v1/health", expected=200))
     def ui_index_structure():
         _, html = req_text("/", expected=200)
@@ -307,8 +367,6 @@ def run():
             'id="dailyTargetPerformance"',
         ):
             expect(token in html, f"daily target ui missing {token}")
-        expect("reconciliation_status" in py and "matched_sell_trade_id" in py and "matched_buy_trade_id" in py, "daily target trade reconciliation fields missing")
-        expect("def reconcile_daily_target_trade_links(" in py, "daily target trade reconciliation helper missing")
         expect("def sync_daily_target_positions(" in py, "daily target position sync helper missing")
         expect("CREATE TABLE IF NOT EXISTS daily_target_positions" in py, "daily target positions table missing")
         expect("def compute_daily_target_performance(" in py, "daily target performance helper missing")
@@ -316,7 +374,6 @@ def run():
         expect("function renderDailyTargetPlan(" in js, "daily target renderer missing")
         expect("function loadDailyTargetPlan(options = {})" in js, "daily target loader missing")
         expect("function loadDailyTargetHistory(options = {})" in js, "daily target history loader missing")
-        expect("dailyTargetReconLabel" in js, "daily target reconciliation label helper missing")
         expect("function isClosedDailyTargetState(" in js, "daily target closed-state helper missing")
         expect("dailyTargetRefreshBtn" in js and "dailyTargetResetBtn" in js, "daily target buttons not wired")
         expect("dailyTargetDrafts" in js, "daily target draft state missing")
@@ -576,7 +633,7 @@ def run():
         pairs = out.get("pairs") or []
         if pairs:
             sample = pairs[0]
-            for key in ("pair_id", "sell_symbol", "buy_symbol", "buy_target_exit_price", "expected_profit_value", "rotation_score", "reconciliation_status"):
+            for key in ("pair_id", "sell_symbol", "buy_symbol", "buy_target_exit_price", "expected_profit_value", "rotation_score"):
                 expect(key in sample, f"daily target pair missing {key}")
             pair_id = int(sample.get("pair_id") or 0)
             expect(pair_id > 0, "daily target pair id invalid")
@@ -601,7 +658,6 @@ def run():
         _, hist = req("GET", "/api/v1/daily-target/history?limit=50", expected=200)
         expect("items" in hist and "summary" in hist, "daily target history payload incomplete")
         if hist.get("items"):
-            expect("reconciliation_status" in hist["items"][0], "daily target history missing reconciliation status")
             expect("current_buy_value" in hist["items"][0], "daily target history missing current buy value")
         _, hist_filtered = req("GET", "/api/v1/daily-target/history?limit=20&state=closed&date_from=2026-01-01&date_to=2026-12-31", expected=200)
         hist_summary = hist_filtered.get("summary") or {}
@@ -610,6 +666,86 @@ def run():
         expect(hist_summary.get("date_to") == "2026-12-31", "daily target history to-date filter not echoed")
 
     check("daily_target_plan", daily_target_plan_runtime)
+    def daily_target_mixed_bucket_tax_runtime():
+        with app.db_connect() as conn:
+            sym = "SMKMIXED"
+            clear_symbol(conn, sym)
+            upsert_symbol(conn, sym, qty=20, avg_cost=130, ltp=130)
+            insert_trade(conn, sym, "BUY", "2024-01-01", 10, 100, notes="ltcg-gain-lot")
+            insert_trade(conn, sym, "BUY", "2026-03-01", 10, 160, notes="stcg-loss-lot")
+            conn.commit()
+            tax = app._daily_target_estimate_sell_tax_profile(
+                conn,
+                sym,
+                20,
+                130,
+                as_of_date="2026-04-23",
+                realized_tax_summary={
+                    "fy_label": "FY26",
+                    "stcg_net_gain": 0.0,
+                    "ltcg_net_gain": 0.0,
+                    "ltcg_remaining_exemption": 0.0,
+                },
+            )
+        expect(abs(float(tax.get("tax_payable") or 0.0) - 37.5) < 0.01, f"mixed bucket payable mismatch: {tax}")
+        expect(abs(float(tax.get("tax_relief") or 0.0) - 37.5) < 0.01, f"mixed bucket relief mismatch: {tax}")
+        expect(abs(float(tax.get("tax_drag") or 0.0)) < 0.01, f"mixed bucket drag should net to zero: {tax}")
+        expect(str(tax.get("tax_bucket_mix") or "") == "MIXED", f"mixed bucket label mismatch: {tax}")
+
+    check("daily_target_mixed_bucket_tax", daily_target_mixed_bucket_tax_runtime)
+    def daily_target_batch_gain_pool_runtime():
+        sell_syms = ("SMKLSA", "SMKLSB")
+        buy_syms = ("SMKBYA", "SMKBYB")
+        orig_realized = app.compute_realized_equity_tax_summary
+        orig_strategy = app.latest_strategy_recommendation_map
+        try:
+            with app.db_connect() as conn:
+                for sym in sell_syms + buy_syms:
+                    clear_symbol(conn, sym)
+                for sym in sell_syms:
+                    upsert_symbol(conn, sym, qty=10, avg_cost=100, ltp=90)
+                    insert_trade(conn, sym, "BUY", "2026-03-01", 10, 100, notes="stcg-loss-lot")
+                for sym in buy_syms:
+                    upsert_symbol(conn, sym, qty=10, avg_cost=100, ltp=100)
+                    insert_trade(conn, sym, "BUY", "2025-12-01", 10, 100, notes="buy-candidate")
+                conn.commit()
+
+                def fake_realized(_conn, as_of_date=None):
+                    return {
+                        "fy_label": "FY26",
+                        "fy_start_date": "2025-04-01",
+                        "fy_end_date": "2026-03-31",
+                        "stcg_net_gain": 100.0,
+                        "ltcg_net_gain": 0.0,
+                        "ltcg_remaining_exemption": 0.0,
+                    }
+
+                def fake_strategy(_conn):
+                    return {
+                        "SMKLSA": {"action": "TRIM"},
+                        "SMKLSB": {"action": "TRIM"},
+                        "SMKBYA": {"action": "ADD"},
+                        "SMKBYB": {"action": "ADD"},
+                    }
+
+                app.compute_realized_equity_tax_summary = fake_realized
+                app.latest_strategy_recommendation_map = fake_strategy
+                out = app.build_daily_target_suggestions(conn, seed_capital=1000, target_profit_pct=1.0, top_n=2)
+        finally:
+            app.compute_realized_equity_tax_summary = orig_realized
+            app.latest_strategy_recommendation_map = orig_strategy
+
+        pairs = out.get("pairs") or []
+        expect(len(pairs) >= 2, f"expected at least 2 pairs for gain-pool depletion test, got {pairs}")
+        selected = [x for x in pairs if str(x.get("sell_symbol") or "") in sell_syms]
+        expect(len(selected) == 2, f"expected both sell symbols to be selected, got {pairs}")
+        relief_by_symbol = {str(x.get("sell_symbol")): round(float(x.get("sell_tax_relief") or 0.0), 2) for x in selected}
+        total_relief = round(sum(relief_by_symbol.values()), 2)
+        expect(total_relief <= 20.01, f"batch tax relief reused FY gain pool: {relief_by_symbol}")
+        expect(any(v >= 19.99 for v in relief_by_symbol.values()), f"first pair did not use FY STCG pool: {relief_by_symbol}")
+        expect(any(abs(v) <= 0.01 for v in relief_by_symbol.values()), f"second pair should have near-zero relief after pool depletion: {relief_by_symbol}")
+
+    check("daily_target_batch_gain_pool", daily_target_batch_gain_pool_runtime)
     def attention_console_runtime():
         _, out = req("GET", "/api/v1/attention", expected=200)
         summary = out.get("summary") or {}

@@ -2724,20 +2724,6 @@ function dailyTargetStateOptions(currentState) {
     .join("");
 }
 
-function dailyTargetReconLabel(row) {
-  const status = String(row?.reconciliation_status || "unmatched").toLowerCase();
-  if (status === "matched") return "Matched";
-  if (status === "partial") return "Partial";
-  return "Unmatched";
-}
-
-function dailyTargetReconClass(row) {
-  const status = String(row?.reconciliation_status || "unmatched").toLowerCase();
-  if (status === "matched") return "pos";
-  if (status === "partial") return "";
-  return "neg";
-}
-
 function isClosedDailyTargetState(rawState) {
   const s = String(rawState || "").toLowerCase();
   return s === "executed" || s === "skipped" || s === "replaced";
@@ -2759,8 +2745,6 @@ function renderDailyTargetHistory(payload) {
       <div class="metric">Buy Done: ${Number(summary.buy_done || 0)}</div>
       <div class="metric">Skipped: ${Number(summary.skipped || 0)}</div>
       <div class="metric">Replaced: ${Number(summary.replaced || 0)}</div>
-      <div class="metric pos">Matched: ${Number(summary.matched || 0)}</div>
-      <div class="metric ${Number(summary.unmatched || 0) > 0 ? "neg" : ""}">Unmatched: ${Number(summary.unmatched || 0)}</div>
       <div class="metric">From: ${escapeHtml(String(summary.date_from || "-"))}</div>
       <div class="metric">To: ${escapeHtml(String(summary.date_to || "-"))}</div>
       <div class="metric">State Filter: ${escapeHtml(String(summary.state_filter || "all"))}</div>
@@ -2782,14 +2766,13 @@ function renderDailyTargetHistory(payload) {
               <td class="${clsBySign(r.expected_profit_value)}">${money(r.expected_profit_value)}</td>
               <td>${money(r.current_buy_value)}</td>
               <td class="${clsBySign(r.live_mtm_pnl)}">${money(r.live_mtm_pnl)}</td>
-              <td class="${dailyTargetReconClass(r)}">${escapeHtml(dailyTargetReconLabel(r))}</td>
               <td>${r.executed_sell_value ? money(r.executed_sell_value) : "-"}</td>
               <td>${r.executed_buy_value ? money(r.executed_buy_value) : "-"}</td>
               <td class="reason-cell">${escapeHtml(String(r.completion_note || ""))}</td>
             </tr>`
         )
         .join("")
-    : '<tr><td colspan="15">No tracked rotation history yet.</td></tr>';
+    : '<tr><td colspan="14">No tracked rotation history yet.</td></tr>';
 }
 
 function bindDailyTargetTableActions() {
@@ -2918,8 +2901,6 @@ function renderDailyTargetPlan(payload) {
       <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return %: ${pct(perf.compounded_return_pct)}</div>
       <div class="metric">Executed Rotations: ${Number(perf.executed_rotation_count || 0)}</div>
       <div class="metric">Open Tracked Positions: ${Number(perf.open_position_count || 0)}</div>
-      <div class="metric pos">Matched Trades: ${Number(perf.matched_rotation_count || 0)}</div>
-      <div class="metric ${Number(perf.unmatched_rotation_count || 0) > 0 ? "neg" : ""}">Unmatched Trades: ${Number(perf.unmatched_rotation_count || 0)}</div>
       <div class="metric">Cumulative Sell Value: ${money(perf.cumulative_sell_value)}</div>
       <div class="metric">Cumulative Buy Value: ${money(perf.cumulative_buy_value)}</div>
       <div class="metric">Open Trade Cost Basis: ${money(perf.live_mtm_basis_value)}</div>
@@ -2971,7 +2952,6 @@ function renderDailyTargetPlan(payload) {
                 <td class="${clsBySign(r.expected_profit_value)}">${money(r.expected_profit_value)}</td>
                 <td>${Number(r.rotation_score || 0).toFixed(2)}</td>
                 <td class="${Number(r.target_progress_pct || 0) >= 100 ? "exit-now" : clsBySign(r.target_progress_pct)}">${Number(r.target_progress_pct || 0) >= 100 ? `&#9889; EXIT NOW (${pct(r.target_progress_pct)})` : pct(r.target_progress_pct)}</td>
-                <td class="${dailyTargetReconClass(r)}">${escapeHtml(dailyTargetReconLabel(r))}</td>
                 <td class="reason-cell">${escapeHtml(String(r.sell_reason || ""))}</td>
                 <td class="reason-cell">${escapeHtml(String(r.buy_reason || ""))}</td>
                 <td>
@@ -2991,7 +2971,7 @@ function renderDailyTargetPlan(payload) {
             }
           )
           .join("")
-      : '<tr><td colspan="18">No active daily target rotation ideas.</td></tr>';
+      : '<tr><td colspan="17">No active daily target rotation ideas.</td></tr>';
   }
   const completedBody = $("dailyTargetCompletedTable")?.querySelector("tbody");
   if (completedBody) {
@@ -3006,13 +2986,12 @@ function renderDailyTargetPlan(payload) {
                 <td>${escapeHtml(String(r.buy_symbol || ""))} x ${money(r.buy_qty)}</td>
                 <td>${r.executed_sell_price ? `${money(r.executed_sell_price)} / ${money(r.executed_sell_value || 0)}` : "-"}</td>
                 <td>${r.executed_buy_price ? `${money(r.executed_buy_price)} / ${money(r.executed_buy_value || 0)}` : "-"}</td>
-                <td class="${dailyTargetReconClass(r)}">${escapeHtml(dailyTargetReconLabel(r))}</td>
                 <td>${escapeHtml(String(r.executed_buy_at || r.executed_sell_at || r.updated_at || "-"))}</td>
                 <td class="reason-cell">${escapeHtml(String(r.completion_note || ""))}</td>
               </tr>`
           )
           .join("")
-      : '<tr><td colspan="9">No completed rotations in the current cycle.</td></tr>';
+      : '<tr><td colspan="8">No completed rotations in the current cycle.</td></tr>';
   }
   const snapBody = $("dailyTargetSnapshotsTable")?.querySelector("tbody");
   if (snapBody) {
