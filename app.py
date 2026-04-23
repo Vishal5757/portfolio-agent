@@ -11181,9 +11181,24 @@ def _daily_target_estimate_sell_tax_profile(conn, symbol, sell_qty, sell_price, 
         stcg_net_gain * _daily_target_equity_tax_rate("STCG", cfg)
         + ltcg_taxable_gain_after_exemption * _daily_target_equity_tax_rate("LTCG", cfg)
     )
-    tax_relief = (
-        stcg_net_loss * _daily_target_equity_tax_rate("STCG", cfg)
-        + ltcg_net_loss * _daily_target_equity_tax_rate("LTCG", cfg)
+    # Tax relief: only count losses that can be offset against actual FY realized gains.
+    # Under Indian IT Act S.70: STCG losses can offset STCG gains AND LTCG gains.
+    # LTCG losses can only offset LTCG gains.
+    fy_stcg_realized = max(0.0, parse_float(realized.get("stcg_net_gain"), 0.0))
+    fy_ltcg_realized = max(0.0, parse_float(realized.get("ltcg_net_gain"), 0.0))
+    # FY LTCG taxable = net LTCG gain minus the portion still covered by exemption
+    fy_ltcg_exemption_left = max(0.0, parse_float(realized.get("ltcg_remaining_exemption"), parse_float(cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT)))
+    fy_ltcg_taxable = max(0.0, fy_ltcg_realized - fy_ltcg_exemption_left)
+    # STCG loss: offset against FY STCG gains first, then remaining against FY LTCG taxable gains
+    stcg_vs_stcg = min(stcg_net_loss, fy_stcg_realized)
+    stcg_vs_ltcg = min(max(0.0, stcg_net_loss - stcg_vs_stcg), fy_ltcg_taxable)
+    # LTCG loss: only offsets remaining FY LTCG taxable gains
+    ltcg_vs_ltcg = min(ltcg_net_loss, max(0.0, fy_ltcg_taxable - stcg_vs_ltcg))
+    tax_relief = round(
+        stcg_vs_stcg * _daily_target_equity_tax_rate("STCG", cfg)
+        + stcg_vs_ltcg * _daily_target_equity_tax_rate("LTCG", cfg)
+        + ltcg_vs_ltcg * _daily_target_equity_tax_rate("LTCG", cfg),
+        2,
     )
     bucket_mix = "MIXED" if len(buckets_seen) > 1 else (next(iter(buckets_seen)) if buckets_seen else "NA")
     return {
@@ -11513,7 +11528,8 @@ def sync_daily_target_positions(conn, pair_id):
 def _daily_target_virtual_open_positions(conn):
     rows = conn.execute(
         """
-        SELECT p.symbol, SUM(p.qty) AS qty, AVG(p.entry_price) AS avg_entry_price
+        SELECT p.symbol, SUM(p.qty) AS qty,
+               SUM(p.qty * p.entry_price) / NULLIF(SUM(p.qty), 0) AS avg_entry_price
         FROM daily_target_positions p
         JOIN daily_target_plan_pairs dp ON dp.id = p.source_pair_id
         WHERE LOWER(p.status) = 'open'
@@ -11662,6 +11678,11 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
     split_map = load_split_map(conn)
     tax_cfg = get_tax_profile_config(conn)
     realized_tax_summary = compute_realized_equity_tax_summary(conn)
+    # FY gain pools used to gate loss-relief scoring; precomputed once for the whole suggestion batch
+    _fy_stcg_gain = max(0.0, parse_float(realized_tax_summary.get("stcg_net_gain"), 0.0))
+    _fy_ltcg_gain = max(0.0, parse_float(realized_tax_summary.get("ltcg_net_gain"), 0.0))
+    _fy_ltcg_exemption_left = max(0.0, parse_float(realized_tax_summary.get("ltcg_remaining_exemption"), parse_float(tax_cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT)))
+    _fy_ltcg_taxable = max(0.0, _fy_ltcg_gain - _fy_ltcg_exemption_left)
 
     cfg = get_intel_parameter_bundle(conn)
     strategy_map = latest_strategy_recommendation_map(conn)
@@ -11722,11 +11743,17 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
         ltcg_loss_available = round(sum(max(0.0, -parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "LTCG" and parse_float(x.get("unrealized_pnl"), 0.0) < 0), 2)
         stcg_gain_available = round(sum(max(0.0, parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "STCG" and parse_float(x.get("unrealized_pnl"), 0.0) > 0), 2)
         ltcg_gain_available = round(sum(max(0.0, parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "LTCG" and parse_float(x.get("unrealized_pnl"), 0.0) > 0), 2)
+        # Loss relief is only real if there are FY gains to absorb it.
+        # STCG losses can offset STCG gains then LTCG taxable gains (IT Act S.70).
+        _s_vs_s = min(stcg_loss_available, _fy_stcg_gain)
+        _s_vs_l = min(max(0.0, stcg_loss_available - _s_vs_s), _fy_ltcg_taxable)
+        _l_vs_l = min(ltcg_loss_available, max(0.0, _fy_ltcg_taxable - _s_vs_l))
         tax_alpha_value = round(
-            (stcg_loss_available * _daily_target_equity_tax_rate("STCG", tax_cfg))
-            + (ltcg_loss_available * _daily_target_equity_tax_rate("LTCG", tax_cfg))
-            - (stcg_gain_available * _daily_target_equity_tax_rate("STCG", tax_cfg))
-            - (ltcg_gain_available * _daily_target_equity_tax_rate("LTCG", tax_cfg)),
+            _s_vs_s * _daily_target_equity_tax_rate("STCG", tax_cfg)
+            + _s_vs_l * _daily_target_equity_tax_rate("LTCG", tax_cfg)
+            + _l_vs_l * _daily_target_equity_tax_rate("LTCG", tax_cfg)
+            - stcg_gain_available * _daily_target_equity_tax_rate("STCG", tax_cfg)
+            - ltcg_gain_available * _daily_target_equity_tax_rate("LTCG", tax_cfg),
             2,
         )
         tax_alpha_score = round((tax_alpha_value / max(seed, 1.0)) * 500.0, 4)
@@ -11793,6 +11820,9 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
     used_sell = set()
     used_buy = set()
     used_symbols = set()
+    # Running tally of LTCG exemption consumed by earlier pairs in this batch,
+    # so each subsequent pair sees an accurate remaining exemption.
+    _running_ltcg_exemption_consumed = 0.0
     for sell in sell_candidates:
         if sell["symbol"] in used_sell or sell["symbol"] in used_symbols:
             continue
@@ -11818,6 +11848,11 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
                 include_dp_on_sell=True,
                 tax_cfg=tax_cfg,
             )
+            _batch_adjusted_realized = dict(realized_tax_summary)
+            _batch_adjusted_realized["ltcg_remaining_exemption"] = max(
+                0.0,
+                parse_float(realized_tax_summary.get("ltcg_remaining_exemption"), 0.0) - _running_ltcg_exemption_consumed,
+            )
             sell_tax = _daily_target_estimate_sell_tax_profile(
                 conn,
                 sell["symbol"],
@@ -11825,7 +11860,7 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
                 sell["ltp"],
                 split_map=split_map,
                 tax_cfg=tax_cfg,
-                realized_tax_summary=realized_tax_summary,
+                realized_tax_summary=_batch_adjusted_realized,
             )
             redeployable_capital = max(0.0, round(sell_value - parse_float(sell_costs.get("total"), 0.0), 2))
             buy_qty = math.floor((redeployable_capital / max(1e-9, buy["ltp"])) + 1e-9)
@@ -11930,6 +11965,7 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
         if not best:
             continue
         pairs.append(best)
+        _running_ltcg_exemption_consumed += parse_float(best.get("ltcg_exemption_used"), 0.0)
         used_sell.add(best["sell_symbol"])
         used_buy.add(best["buy_symbol"])
         used_symbols.add(best["sell_symbol"])
@@ -12251,13 +12287,10 @@ def _recalibrate_daily_target_plan(conn, plan_row, seed_capital=None, target_pro
         parse_float((target_profit_pct if target_profit_pct is not None else plan_row.get("target_profit_pct")), 1.0),
         2,
     )
-    effective_seed = round(
-        parse_float(
-            perf.get("suggested_next_seed_capital"),
-            (seed_capital if seed_capital is not None else plan_row.get("seed_capital")),
-        ),
-        2,
-    )
+    fallback_seed = round(parse_float(seed_capital if seed_capital is not None else plan_row.get("seed_capital"), 10000.0), 2)
+    effective_seed = round(parse_float(perf.get("suggested_next_seed_capital"), fallback_seed), 2)
+    # guard: never let compounding losses drive effective seed to zero or negative
+    effective_seed = max(effective_seed, fallback_seed) if effective_seed <= 0 else effective_seed
     suggestions = build_daily_target_suggestions(
         conn,
         seed_capital=effective_seed,
