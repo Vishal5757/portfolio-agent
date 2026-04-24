@@ -343,8 +343,10 @@ def run():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        schema = (root / "schema.sql").read_text(encoding="utf-8")
         expect("CREATE TABLE IF NOT EXISTS daily_target_plans" in py, "daily target plan table missing")
         expect("CREATE TABLE IF NOT EXISTS daily_target_plan_pairs" in py, "daily target pair table missing")
+        expect("llm_verdict TEXT" in py and "llm_score_adjustment REAL" in schema, "daily target llm judgement columns missing")
         expect("CREATE TABLE IF NOT EXISTS daily_target_pair_snapshots" in py, "daily target snapshot table missing")
         expect("def build_daily_target_suggestions(" in py, "daily target suggestion builder missing")
         expect("def get_or_create_daily_target_plan(" in py, "daily target plan function missing")
@@ -392,6 +394,8 @@ def run():
         expect("effective_state = state_norm" in py, "daily target effective state auto-upgrade missing")
         expect("def _daily_target_live_pair_metrics(" in py, "daily target live pair metrics helper missing")
         expect("def attach_daily_target_llm_review(" in py, "daily target hosted llm review helper missing")
+        expect("def _daily_target_llm_judgement_map(" in py, "daily target llm judgement parser missing")
+        expect("def _apply_daily_target_llm_judgements(" in py, "daily target llm judgement applier missing")
         expect("purpose=\"daily_target\"" in py, "daily target hosted llm purpose not tracked")
         expect("def _daily_target_build_buy_leg(" in py, "daily target buy-leg builder missing")
         expect("def _daily_target_zerodha_delivery_costs(" in py, "daily target Zerodha delivery cost helper missing")
@@ -405,7 +409,7 @@ def run():
         expect("tax_mode" in py and "equity_stcg_tax_pct" in py and "equity_ltcg_tax_pct" in py, "daily target tax summary fields missing")
         expect("Tax Mode:" in js and "Broker Cost Model:" in js, "daily target tax assumptions not surfaced in ui summary")
         expect("Economical Trade Value:" in js and "Charge Drag @ Seed:" in js and "Size Advice:" in js, "daily target charge-aware sizing not surfaced in ui summary")
-        expect("use_hosted_llm" in js and "Hosted LLM review" in js, "daily target hosted llm review not wired in ui")
+        expect("use_hosted_llm" in js and "Agent Note" in html and "LLM pair judgment" in js, "daily target hosted llm judgement not wired in ui")
         expect("pipeline_buy_switch_after_update" in py, "daily target pipeline switch recalibration missing")
 
     check("daily_target_planner_contract", daily_target_planner_contract)
@@ -440,6 +444,7 @@ def run():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        schema = (root / "schema.sql").read_text(encoding="utf-8")
         schema = (root / "schema.sql").read_text(encoding="utf-8")
         expect("CREATE TABLE IF NOT EXISTS strategy_audit_runs" in py, "strategy audit run table missing")
         expect("CREATE TABLE IF NOT EXISTS strategy_audit_findings" in py, "strategy audit findings table missing")
@@ -516,6 +521,7 @@ def run():
         expect('id="hostedLlmMetricsTable"' in html and 'id="hostedLlmMetricsSummary"' in html, "hosted llm operational dashboard missing")
         expect('id="hostedLlmOpenrouterKey"' in html and 'id="hostedLlmGroqKey"' in html and 'id="hostedLlmHuggingfaceKey"' in html, "hosted llm provider key inputs missing")
         expect("_software_perf_generate_local_proposal" in perf, "software perf local proposal generator missing")
+        expect("purpose=\"software_performance\"" in perf and "hosted_llm_support" in perf, "software performance agent hosted llm support missing")
 
     check("hosted_free_llm_contract", hosted_free_llm_contract)
     def equity_gold_source_guard_contract():
@@ -656,7 +662,7 @@ def run():
         pairs = out.get("pairs") or []
         if pairs:
             sample = pairs[0]
-            for key in ("pair_id", "sell_symbol", "buy_symbol", "buy_target_exit_price", "expected_profit_value", "rotation_score"):
+            for key in ("pair_id", "sell_symbol", "buy_symbol", "buy_target_exit_price", "expected_profit_value", "rotation_score", "llm_verdict", "llm_note"):
                 expect(key in sample, f"daily target pair missing {key}")
             pair_id = int(sample.get("pair_id") or 0)
             expect(pair_id > 0, "daily target pair id invalid")

@@ -397,6 +397,7 @@ def _software_perf_base_proposal(snapshot, after_snapshot, cfg, actions=None, er
 
 
 def _software_perf_generate_local_proposal(snapshot, after_snapshot, cfg, actions=None, errors=None, core_guard=None):
+    core = _core()
     proposal = _software_perf_base_proposal(
         snapshot,
         after_snapshot,
@@ -406,6 +407,49 @@ def _software_perf_generate_local_proposal(snapshot, after_snapshot, cfg, action
         core_guard=core_guard,
     )
     proposal["analysis_engine"] = "local_rules"
+    try:
+        with core.db_connect() as conn:
+            llm_cfg = core.get_hosted_llm_config(conn)
+            if llm_cfg.get("enabled"):
+                prompt = (
+                    "Return concise JSON for a software performance agent advisory. "
+                    "Do not suggest destructive operations. Focus on root-cause hypotheses, safe tests, and safe code-review targets. "
+                    "Schema: {\"summary\":\"short\",\"safe_actions\":[\"...\"],\"tests_to_add\":[\"...\"],\"risks\":[\"...\"]}.\n\n"
+                    + core._safe_json_dumps(
+                        {
+                            "core_objective": proposal.get("core_objective"),
+                            "before": snapshot,
+                            "after": after_snapshot,
+                            "actions": list(actions or []),
+                            "errors": list(errors or []),
+                            "core_guard": dict(core_guard or {}),
+                        }
+                    )
+                )
+                result = core.hosted_llm_generate(
+                    conn,
+                    prompt,
+                    purpose="software_performance",
+                    system_prompt="You are a cautious software reliability reviewer. Return only valid JSON. Never propose destructive data changes.",
+                )
+                proposal["hosted_llm_support"] = {
+                    "ok": bool(result.get("ok")),
+                    "status": str(result.get("status") or ""),
+                    "provider": str(result.get("provider") or ""),
+                    "model": str(result.get("model") or ""),
+                    "latency_ms": core.parse_float(result.get("latency_ms"), 0.0),
+                    "advisory": core._extract_json_object(result.get("text")) if result.get("ok") and hasattr(core, "_extract_json_object") else {},
+                    "error": str(result.get("error") or ""),
+                }
+                if result.get("ok"):
+                    proposal["analysis_engine"] = "local_rules+hosted_llm"
+                    adv = proposal["hosted_llm_support"].get("advisory") or {}
+                    if adv.get("summary"):
+                        proposal["analysis_summary"] = f"{proposal['analysis_summary']} LLM advisory: {adv.get('summary')}"
+                    proposal["tests_to_add"].extend([str(x) for x in adv.get("tests_to_add", []) if str(x).strip()][:3])
+                    proposal["observability_additions"].extend([str(x) for x in adv.get("safe_actions", []) if str(x).strip()][:3])
+    except Exception as ex:
+        proposal["hosted_llm_support"] = {"ok": False, "status": "error", "error": str(ex)[:500]}
     return proposal
 
 
@@ -578,7 +622,8 @@ def run_software_perf_agent_once(max_runtime_sec=60, force=False):
             core_guard=core_guard,
         )
         details = {
-            "analysis_engine": "local_rules",
+            "analysis_engine": str((improvement or {}).get("analysis_engine") or "local_rules"),
+            "hosted_llm_support": dict((improvement or {}).get("hosted_llm_support") or {}),
             "suggested_live_config_updates": dict((improvement or {}).get("suggested_live_config_updates") or {}),
             "suggested_code_changes": len((improvement or {}).get("suggested_code_changes") or []),
         }
@@ -591,7 +636,7 @@ def run_software_perf_agent_once(max_runtime_sec=60, force=False):
                     conn,
                     action_type="write_draft",
                     status="ok",
-                    summary="Wrote local-rule software-improvement draft file.",
+                    summary=f"Wrote {details['analysis_engine']} software-improvement draft file.",
                     details={**details, "path": draft_path},
                 )
                 conn.commit()

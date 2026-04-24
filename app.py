@@ -860,6 +860,11 @@ def ensure_schema_migrations():
               buy_reason TEXT,
               expected_profit_value REAL NOT NULL DEFAULT 0,
               rotation_score REAL NOT NULL DEFAULT 0,
+              llm_verdict TEXT,
+              llm_score_adjustment REAL NOT NULL DEFAULT 0,
+              llm_note TEXT,
+              llm_provider TEXT,
+              llm_reviewed_at TEXT,
               current_sell_ref_price REAL NOT NULL DEFAULT 0,
               current_buy_ref_price REAL NOT NULL DEFAULT 0,
               target_progress_pct REAL NOT NULL DEFAULT 0,
@@ -908,6 +913,16 @@ def ensure_schema_migrations():
             conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN updated_at TEXT")
         if "last_recalibrated_at" not in pcols:
             conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN last_recalibrated_at TEXT")
+        if "llm_verdict" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN llm_verdict TEXT")
+        if "llm_score_adjustment" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN llm_score_adjustment REAL NOT NULL DEFAULT 0")
+        if "llm_note" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN llm_note TEXT")
+        if "llm_provider" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN llm_provider TEXT")
+        if "llm_reviewed_at" not in pcols:
+            conn.execute("ALTER TABLE daily_target_plan_pairs ADD COLUMN llm_reviewed_at TEXT")
         conn.execute(
             """
             UPDATE daily_target_plan_pairs
@@ -1881,7 +1896,7 @@ def _hosted_llm_chat_once(provider, api_key, model, messages, timeout_sec=HOSTED
     return text
 
 
-def hosted_llm_generate(conn, prompt, purpose="strategy_audit"):
+def hosted_llm_generate(conn, prompt, purpose="strategy_audit", system_prompt=None):
     cfg = get_hosted_llm_config(conn, include_keys=True)
     if not cfg.get("enabled"):
         return {"ok": False, "status": "disabled", "error": "hosted_llm_disabled", "provider": "", "text": ""}
@@ -1892,10 +1907,10 @@ def hosted_llm_generate(conn, prompt, purpose="strategy_audit"):
     messages = [
         {
             "role": "system",
-            "content": (
+            "content": str(system_prompt or (
                 "You are a cautious portfolio strategy reviewer. Do not provide personalized financial advice. "
                 "Summarize risks, contradictions, and checks in concise bullets. Never claim certainty."
-            ),
+            )),
         },
         {"role": "user", "content": prompt_text},
     ]
@@ -12406,9 +12421,10 @@ def _insert_daily_target_pair(conn, plan_id, pair, state="pending"):
           plan_id, priority_rank, state, sell_symbol, sell_qty, sell_ref_price, sell_trade_value, sell_target_price,
           sell_score, sell_reason, buy_symbol, buy_qty, buy_ref_price, buy_trade_value, buy_target_exit_price,
           buy_score, buy_reason, expected_profit_value, rotation_score, current_sell_ref_price,
+          llm_verdict, llm_score_adjustment, llm_note, llm_provider, llm_reviewed_at,
           current_buy_ref_price, target_progress_pct, matched_sell_trade_id, matched_buy_trade_id, reconciliation_status,
           created_at, updated_at, last_recalibrated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(parse_float(plan_id, 0.0)),
@@ -12431,6 +12447,11 @@ def _insert_daily_target_pair(conn, plan_id, pair, state="pending"):
             round(parse_float(pair.get("expected_profit_value"), 0.0), 2),
             round(parse_float(pair.get("rotation_score"), 0.0), 4),
             round(parse_float(pair.get("current_sell_ref_price"), pair.get("sell_ref_price")), 4),
+            str(pair.get("llm_verdict") or "").strip() or None,
+            round(parse_float(pair.get("llm_score_adjustment"), 0.0), 4),
+            str(pair.get("llm_note") or "").strip() or None,
+            str(pair.get("llm_provider") or "").strip() or None,
+            str(pair.get("llm_reviewed_at") or "").strip() or None,
             round(parse_float(pair.get("current_buy_ref_price"), pair.get("buy_ref_price")), 4),
             round(parse_float(pair.get("target_progress_pct"), 0.0), 2),
             None,
@@ -12615,6 +12636,11 @@ def _daily_target_plan_payload(conn, plan_row):
                 "buy_reason": str(r["buy_reason"] or ""),
                 "expected_profit_value": round(parse_float(r["expected_profit_value"], 0.0), 2),
                 "rotation_score": round(parse_float(r["rotation_score"], 0.0), 4),
+                "llm_verdict": str(r["llm_verdict"] or ""),
+                "llm_score_adjustment": round(parse_float(r["llm_score_adjustment"], 0.0), 4),
+                "llm_note": str(r["llm_note"] or ""),
+                "llm_provider": str(r["llm_provider"] or ""),
+                "llm_reviewed_at": str(r["llm_reviewed_at"] or ""),
                 "current_sell_ref_price": round(parse_float(live.get("current_sell_ref_price"), r["current_sell_ref_price"]), 4),
                 "current_buy_ref_price": round(parse_float(live.get("current_buy_ref_price"), r["current_buy_ref_price"]), 4),
                 "target_progress_pct": round(parse_float(live.get("target_progress_pct"), r["target_progress_pct"]), 2),
@@ -12722,10 +12748,14 @@ def _daily_target_llm_prompt(payload):
             }
         )
     return (
-        "Review this Daily Target rotation plan. It is generated by deterministic rules first. "
-        "Check whether the suggested sell/buy pairs look operationally sensible after charges, taxes, target exit, "
-        "same-day non-buyback rule, and current pipeline state. Do not provide certainty or investment advice. "
-        "Return concise bullets: GO/CAUTION/AVOID posture, key risks, and what to verify before execution.\n\n"
+        "Return JSON only. Judge each Daily Target trade pair and provide bounded score adjustments. "
+        "The deterministic planner creates the base ideas; you only add a risk/quality overlay. "
+        "Use this schema exactly: "
+        '{"overall_verdict":"GO|CAUTION|AVOID","overall_note":"short note",'
+        '"pair_judgements":[{"rank":1,"sell":"SYMBOL","buy":"SYMBOL","verdict":"GO|CAUTION|AVOID",'
+        '"score_adjustment":0,"note":"short operational note"}]}. '
+        "score_adjustment must be between -8 and 8. Prefer 0 when unsure. "
+        "Do not add markdown, explanations outside JSON, or investment certainty.\n\n"
         + _safe_json_dumps(
             {
                 "summary": summary,
@@ -12737,9 +12767,133 @@ def _daily_target_llm_prompt(payload):
     )
 
 
+def _extract_json_object(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    direct = _safe_json_loads(raw, None)
+    if isinstance(direct, dict):
+        return direct
+    match = re.search(r"\{.*\}", raw, flags=re.S)
+    if not match:
+        return {}
+    parsed = _safe_json_loads(match.group(0), None)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_daily_target_llm_verdict(value):
+    v = str(value or "").strip().upper()
+    if v not in ("GO", "CAUTION", "AVOID"):
+        return "CAUTION"
+    return v
+
+
+def _daily_target_llm_judgement_map(review_text):
+    data = _extract_json_object(review_text)
+    items = []
+    for raw in data.get("pair_judgements") or []:
+        if not isinstance(raw, dict):
+            continue
+        rank = int(parse_float(raw.get("rank"), 0.0))
+        sell = symbol_upper(raw.get("sell"))
+        buy = symbol_upper(raw.get("buy"))
+        if rank <= 0 and not (sell and buy):
+            continue
+        verdict = _normalize_daily_target_llm_verdict(raw.get("verdict"))
+        adj = clamp(parse_float(raw.get("score_adjustment"), 0.0), -8.0, 8.0)
+        if verdict == "AVOID":
+            adj = min(adj, -4.0)
+        elif verdict == "CAUTION":
+            adj = min(adj, 2.0)
+        note = str(raw.get("note") or "").strip()[:240]
+        items.append({"rank": rank, "sell": sell, "buy": buy, "verdict": verdict, "score_adjustment": round(adj, 4), "note": note})
+    return {
+        "overall_verdict": _normalize_daily_target_llm_verdict(data.get("overall_verdict")),
+        "overall_note": str(data.get("overall_note") or "").strip()[:500],
+        "pair_judgements": items,
+    }
+
+
+def _apply_daily_target_llm_judgements(conn, payload, review):
+    plan = dict((payload or {}).get("plan") or {})
+    plan_id = int(parse_float(plan.get("id"), 0.0))
+    if plan_id <= 0 or not review.get("ok"):
+        return dict(payload or {})
+    parsed = _daily_target_llm_judgement_map(review.get("text"))
+    judgments = parsed.get("pair_judgements") or []
+    if not judgments:
+        review["parsed"] = parsed
+        review["applied_count"] = 0
+        return dict(payload or {})
+    current_pairs = {int(parse_float(p.get("pair_id"), 0.0)): dict(p) for p in (payload or {}).get("pairs") or []}
+    applied = 0
+    stamp = now_iso()
+    for j in judgments:
+        match = None
+        for p in current_pairs.values():
+            if int(parse_float(j.get("rank"), 0.0)) > 0 and int(parse_float(p.get("priority_rank"), 0.0)) != int(parse_float(j.get("rank"), 0.0)):
+                continue
+            if j.get("sell") and symbol_upper(p.get("sell_symbol")) != j.get("sell"):
+                continue
+            if j.get("buy") and symbol_upper(p.get("buy_symbol")) != j.get("buy"):
+                continue
+            match = p
+            break
+        if not match:
+            continue
+        pair_id = int(parse_float(match.get("pair_id"), 0.0))
+        row = conn.execute("SELECT rotation_score, llm_score_adjustment FROM daily_target_plan_pairs WHERE id = ?", (pair_id,)).fetchone()
+        if not row:
+            continue
+        old_adj = parse_float(row["llm_score_adjustment"], 0.0)
+        base_score = parse_float(row["rotation_score"], 0.0) - old_adj
+        new_adj = parse_float(j.get("score_adjustment"), 0.0)
+        new_score = round(base_score + new_adj, 4)
+        conn.execute(
+            """
+            UPDATE daily_target_plan_pairs
+            SET rotation_score = ?, llm_verdict = ?, llm_score_adjustment = ?, llm_note = ?,
+                llm_provider = ?, llm_reviewed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_score,
+                str(j.get("verdict") or "CAUTION"),
+                round(new_adj, 4),
+                str(j.get("note") or "").strip() or None,
+                str(review.get("provider") or ""),
+                stamp,
+                stamp,
+                pair_id,
+            ),
+        )
+        applied += 1
+    pending = conn.execute(
+        """
+        SELECT id
+        FROM daily_target_plan_pairs
+        WHERE plan_id = ? AND LOWER(state) = 'pending'
+        ORDER BY rotation_score DESC, priority_rank ASC, id ASC
+        """,
+        (plan_id,),
+    ).fetchall()
+    for idx, row in enumerate(pending, start=1):
+        conn.execute("UPDATE daily_target_plan_pairs SET priority_rank = ? WHERE id = ?", (idx, int(parse_float(row["id"], 0.0))))
+    conn.commit()
+    fresh = _daily_target_plan_payload(conn, get_active_daily_target_plan(conn))
+    review["parsed"] = parsed
+    review["applied_count"] = applied
+    return fresh
+
+
 def attach_daily_target_llm_review(conn, payload):
     out = dict(payload or {})
-    result = hosted_llm_generate(conn, _daily_target_llm_prompt(out), purpose="daily_target")
+    result = hosted_llm_generate(
+        conn,
+        _daily_target_llm_prompt(out),
+        purpose="daily_target",
+        system_prompt="You are a strict JSON-only trade-pair quality judge. Return only valid JSON matching the requested schema.",
+    )
     review = {
         "ok": bool(result.get("ok")),
         "status": str(result.get("status") or ""),
@@ -12750,6 +12904,7 @@ def attach_daily_target_llm_review(conn, payload):
         "error": str(result.get("error") or ""),
         "attempts": result.get("attempts") or [],
     }
+    out = _apply_daily_target_llm_judgements(conn, out, review)
     out["llm_review"] = review
     summary = dict(out.get("summary") or {})
     summary["hosted_llm_status"] = review["status"]

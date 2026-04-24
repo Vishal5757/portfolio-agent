@@ -2817,11 +2817,11 @@ function renderDailyTargetPlan(payload) {
   }
   if ($("dailyTargetLlmReview")) {
     if (!llmReview) {
-      $("dailyTargetLlmReview").textContent = "Hosted LLM review not requested.";
+      $("dailyTargetLlmReview").textContent = "LLM pair judgment not requested.";
     } else if (llmReview.ok) {
-      $("dailyTargetLlmReview").textContent = `Hosted LLM review via ${llmReview.provider || "-"} (${Number(llmReview.latency_ms || 0).toFixed(0)} ms)\n\n${llmReview.text || ""}`;
+      $("dailyTargetLlmReview").textContent = `LLM pair judgment applied via ${llmReview.provider || "-"} (${Number(llmReview.latency_ms || 0).toFixed(0)} ms). See Agent Note column for pair-level verdicts.`;
     } else {
-      $("dailyTargetLlmReview").textContent = `Hosted LLM review unavailable: ${llmReview.error || llmReview.status || "unknown"}\n\nDeterministic Daily Target planner output is still shown above.`;
+      $("dailyTargetLlmReview").textContent = `LLM pair judgment unavailable: ${llmReview.error || llmReview.status || "unknown"}. Deterministic Daily Target planner output is still shown.`;
     }
   }
   if ($("dailyTargetPerformance")) {
@@ -2907,6 +2907,7 @@ function renderDailyTargetPlan(payload) {
                 <td>${money(r.buy_target_exit_price)}</td>
                 <td class="${clsBySign(r.expected_profit_value)}">${money(r.expected_profit_value)}</td>
                 <td>${Number(r.rotation_score || 0).toFixed(2)}</td>
+                <td class="reason-cell ${String(r.llm_verdict || "").toUpperCase() === "AVOID" ? "neg" : String(r.llm_verdict || "").toUpperCase() === "GO" ? "pos" : "warn"}">${escapeHtml(`${r.llm_verdict ? `${r.llm_verdict}: ` : ""}${r.llm_note || ""}` || "-")}</td>
                 <td class="${Number(r.target_progress_pct || 0) >= 100 ? "exit-now" : clsBySign(r.target_progress_pct)}">${Number(r.target_progress_pct || 0) >= 100 ? `&#9889; EXIT NOW (${pct(r.target_progress_pct)})` : pct(r.target_progress_pct)}</td>
                 <td class="reason-cell">${escapeHtml(String(r.sell_reason || ""))}</td>
                 <td class="reason-cell">${escapeHtml(String(r.buy_reason || ""))}</td>
@@ -2927,7 +2928,7 @@ function renderDailyTargetPlan(payload) {
             }
           )
           .join("")
-      : '<tr><td colspan="17">No active daily target rotation ideas.</td></tr>';
+      : '<tr><td colspan="18">No active daily target rotation ideas.</td></tr>';
   }
   const completedBody = $("dailyTargetCompletedTable")?.querySelector("tbody");
   if (completedBody) {
