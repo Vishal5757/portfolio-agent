@@ -358,6 +358,8 @@ def run():
             'id="dailyTargetSeedCapital"',
             'id="dailyTargetProfitPct"',
             'id="dailyTargetTopN"',
+            'id="dailyTargetUseHostedLlm"',
+            'id="dailyTargetLlmReview"',
             'id="dailyTargetTable"',
             'id="dailyTargetCompletedTable"',
             'id="dailyTargetFullCycleTable"',
@@ -389,6 +391,8 @@ def run():
         expect("Full Cycle Complete - Latest 10" in html, "daily target full-cycle table title missing")
         expect("effective_state = state_norm" in py, "daily target effective state auto-upgrade missing")
         expect("def _daily_target_live_pair_metrics(" in py, "daily target live pair metrics helper missing")
+        expect("def attach_daily_target_llm_review(" in py, "daily target hosted llm review helper missing")
+        expect("purpose=\"daily_target\"" in py, "daily target hosted llm purpose not tracked")
         expect("def _daily_target_build_buy_leg(" in py, "daily target buy-leg builder missing")
         expect("def _daily_target_zerodha_delivery_costs(" in py, "daily target Zerodha delivery cost helper missing")
         expect("def _daily_target_charge_drag(" in py, "daily target charge-drag helper missing")
@@ -401,6 +405,7 @@ def run():
         expect("tax_mode" in py and "equity_stcg_tax_pct" in py and "equity_ltcg_tax_pct" in py, "daily target tax summary fields missing")
         expect("Tax Mode:" in js and "Broker Cost Model:" in js, "daily target tax assumptions not surfaced in ui summary")
         expect("Economical Trade Value:" in js and "Charge Drag @ Seed:" in js and "Size Advice:" in js, "daily target charge-aware sizing not surfaced in ui summary")
+        expect("use_hosted_llm" in js and "Hosted LLM review" in js, "daily target hosted llm review not wired in ui")
         expect("pipeline_buy_switch_after_update" in py, "daily target pipeline switch recalibration missing")
 
     check("daily_target_planner_contract", daily_target_planner_contract)
@@ -722,6 +727,9 @@ def run():
         expect(hist_summary.get("state_filter") == "closed", "daily target history state filter not echoed")
         expect(hist_summary.get("date_from") == "2026-01-01", "daily target history from-date filter not echoed")
         expect(hist_summary.get("date_to") == "2026-12-31", "daily target history to-date filter not echoed")
+        _, llm_out = req("GET", "/api/v1/daily-target/plan?seed_capital=10000&target_profit_pct=1&top_n=3&recalibrate=0&use_hosted_llm=1", expected=200)
+        review = llm_out.get("llm_review") or {}
+        expect(review.get("status") == "disabled", "daily target hosted llm disabled review should be reported")
 
     check("daily_target_plan", daily_target_plan_runtime)
     def daily_target_mixed_bucket_tax_runtime():

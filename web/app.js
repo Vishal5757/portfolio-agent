@@ -2772,6 +2772,7 @@ function renderDailyTargetPlan(payload) {
   const completedPairs = pairs.filter((r) => isClosedDailyTargetState(r?.state));
   const snapshots = Array.isArray(p.snapshots) ? p.snapshots : [];
   const fullCycles = Array.isArray(p.full_cycles) ? p.full_cycles.slice(0, 10) : [];
+  const llmReview = p.llm_review || null;
   state.dailyTargetPlanRaw = p;
   if ($("dailyTargetSummary")) {
     const taxMode = String(summary.tax_mode || "-").replaceAll("_", " ");
@@ -2808,9 +2809,20 @@ function renderDailyTargetPlan(payload) {
       <div class="metric ${Number(summary.remaining_ltcg_exemption || 0) > 0 ? "pos" : "neg"}">Remaining LTCG Exemption: ${money(summary.remaining_ltcg_exemption)}</div>
       <div class="metric">Tax Bracket Ref: ${pct(summary.investor_tax_bracket_pct)}</div>
       <div class="metric">Broker Cost Model: ${escapeHtml(zerodhaCostModel)}</div>
+      <div class="metric ${llmReview?.ok ? "pos" : llmReview ? "warn" : ""}">LLM Review: ${escapeHtml(String(llmReview?.status || "not requested"))}</div>
+      <div class="metric">LLM Provider: ${escapeHtml(String(llmReview?.provider || "-"))}</div>
       <div class="metric">Created: ${escapeHtml(String(summary.created_at || "-"))}</div>
       <div class="metric">Last Recalibrated: ${escapeHtml(String(summary.last_recalibrated_at || "-"))}</div>
     `;
+  }
+  if ($("dailyTargetLlmReview")) {
+    if (!llmReview) {
+      $("dailyTargetLlmReview").textContent = "Hosted LLM review not requested.";
+    } else if (llmReview.ok) {
+      $("dailyTargetLlmReview").textContent = `Hosted LLM review via ${llmReview.provider || "-"} (${Number(llmReview.latency_ms || 0).toFixed(0)} ms)\n\n${llmReview.text || ""}`;
+    } else {
+      $("dailyTargetLlmReview").textContent = `Hosted LLM review unavailable: ${llmReview.error || llmReview.status || "unknown"}\n\nDeterministic Daily Target planner output is still shown above.`;
+    }
   }
   if ($("dailyTargetPerformance")) {
     $("dailyTargetPerformance").innerHTML = `
@@ -2989,9 +3001,10 @@ async function loadDailyTargetPlan(options = {}) {
   const seedCapital = Math.max(1000, Number($("dailyTargetSeedCapital")?.value || 10000));
   const targetProfitPct = Math.max(0.1, Number($("dailyTargetProfitPct")?.value || 1));
   const topN = Math.max(1, Math.min(10, Number($("dailyTargetTopN")?.value || 5)));
+  const useHostedLlm = !!$("dailyTargetUseHostedLlm")?.checked;
   if ($("dailyTargetStatusText")) {
     $("dailyTargetStatusText").textContent = recalibrate
-      ? `Refreshing ideas: ${new Date().toLocaleString()}`
+      ? `Refreshing ideas${useHostedLlm ? " + LLM review" : ""}: ${new Date().toLocaleString()}`
       : `Loading: ${new Date().toLocaleString()}`;
   }
   const params = new URLSearchParams();
@@ -2999,6 +3012,7 @@ async function loadDailyTargetPlan(options = {}) {
   params.set("target_profit_pct", String(Number(targetProfitPct.toFixed(2))));
   params.set("top_n", String(topN));
   params.set("recalibrate", recalibrate ? "1" : "0");
+  params.set("use_hosted_llm", useHostedLlm ? "1" : "0");
   try {
     const res = await api(`/api/v1/daily-target/plan?${params.toString()}`);
     // On live-poll refreshes (recalibrate=false), preserve any in-progress
@@ -3042,9 +3056,10 @@ async function loadDailyTargetPlan(options = {}) {
       renderDailyTargetPlan(res || {});
     }
     await loadDailyTargetHistory();
+    if (useHostedLlm) await loadHostedLlmMetrics();
     if ($("dailyTargetStatusText")) {
       $("dailyTargetStatusText").textContent = recalibrate
-        ? `Ideas refreshed: ${new Date().toLocaleString()}`
+        ? `Ideas refreshed${useHostedLlm ? " with LLM review" : ""}: ${new Date().toLocaleString()}`
         : `Loaded: ${new Date().toLocaleString()}`;
     }
   } catch (e) {
