@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import ast
 import base64
 import datetime as dt
@@ -76,12 +76,12 @@ SOFTWARE_PERF_AGENT_INTERVAL_DEFAULT_SEC = 15 * 60
 SOFTWARE_PERF_AGENT_MIN_INTERVAL_SEC = 60
 TAX_MONITOR_INTERVAL_DEFAULT_SEC = 24 * 60 * 60
 TAX_MONITOR_MIN_INTERVAL_SEC = 60 * 60
-LLM_DEFAULT_MODEL = "gpt-4.1-mini"
-LLM_DEFAULT_API_URL = "https://api.openai.com/v1/responses"
 RISK_AGENT_INTERVAL_DEFAULT_SEC = 6 * 60 * 60
 RISK_AGENT_MIN_INTERVAL_SEC = 15 * 60
 REPO_SYNC_INTERVAL_DEFAULT_SEC = 60 * 60
 REPO_SYNC_MIN_INTERVAL_SEC = 5 * 60
+MAX_JSON_BODY_BYTES = 25 * 1024 * 1024
+LOCAL_MUTATION_HEADER = "X-Portfolio-Agent-Local"
 GIT_EXE_CANDIDATES = (
     Path(r"C:\Program Files\Git\cmd\git.exe"),
     Path(r"C:\Program Files\Git\bin\git.exe"),
@@ -1536,12 +1536,6 @@ def ensure_default_config():
         "zerodha_stamp_buy_rate": "0.00015",
         "zerodha_gst_rate": "0.18",
         "zerodha_dp_charge_sell_incl_gst": "15.34",
-        "llm_api_key": "",
-        "llm_model": LLM_DEFAULT_MODEL,
-        "llm_api_url": LLM_DEFAULT_API_URL,
-        "llm_last_status": "not_configured",
-        "llm_last_error": "",
-        "llm_last_checked_at": "",
         "risk_agent_enabled": "1",
         "risk_agent_interval_sec": str(RISK_AGENT_INTERVAL_DEFAULT_SEC),
         "risk_agent_last_run_at": "",
@@ -1556,6 +1550,7 @@ def ensure_default_config():
                     "INSERT INTO app_config(key, value, updated_at) VALUES (?, ?, ?)",
                     (key, value, now_iso()),
                 )
+        conn.execute("DELETE FROM app_config WHERE key LIKE 'llm_%'")
         ensure_quote_source_registry(conn, parse_source_list(DEFAULT_LIVE_QUOTE_SOURCES))
         conn.commit()
 
@@ -1786,6 +1781,12 @@ def _sql_dump_for_db(db_path):
         lines = list(conn.iterdump())
     finally:
         conn.close()
+    secret_keys = ("llm_api_key", "llm_model", "llm_api_url", "llm_last_status", "llm_last_error", "llm_last_checked_at")
+    lines = [
+        line
+        for line in lines
+        if not ("app_config" in line and any(k in line for k in secret_keys))
+    ]
     body = "\n".join(lines).strip()
     if body:
         body += "\n"
@@ -3090,264 +3091,6 @@ def set_software_perf_agent_config(
         conn.commit()
 
 
-def _mask_secret(secret, keep=4):
-    raw = str(secret or "").strip()
-    if not raw:
-        return ""
-    if len(raw) <= keep:
-        return "*" * len(raw)
-    return ("*" * max(4, len(raw) - keep)) + raw[-keep:]
-
-
-def _read_llm_runtime_config(conn, include_secret=False):
-    rows = conn.execute(
-        """
-        SELECT key, value
-        FROM app_config
-        WHERE key IN ('llm_api_key', 'llm_model', 'llm_api_url', 'llm_last_status', 'llm_last_error', 'llm_last_checked_at')
-        """
-    ).fetchall()
-    cfg = {r["key"]: r["value"] for r in rows}
-    api_key_db = str(cfg.get("llm_api_key", "") or "").strip()
-    api_key_env = str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
-    api_key = api_key_db or api_key_env
-    model = str(cfg.get("llm_model", "") or "").strip() or str(os.environ.get("OPENAI_MODEL", "") or "").strip() or LLM_DEFAULT_MODEL
-    api_url = str(cfg.get("llm_api_url", "") or "").strip() or str(os.environ.get("OPENAI_API_URL", "") or "").strip() or LLM_DEFAULT_API_URL
-    configured = bool(api_key)
-    source = "app_config" if api_key_db else ("environment" if api_key_env else "not_configured")
-    last_status = str(cfg.get("llm_last_status", "") or "").strip()
-    if not last_status:
-        last_status = "ready" if configured else "not_configured"
-    out = {
-        "configured": configured,
-        "source": source,
-        "model": model,
-        "api_url": api_url,
-        "api_key_masked": _mask_secret(api_key),
-        "last_status": last_status,
-        "last_error": str(cfg.get("llm_last_error", "") or "").strip(),
-        "last_checked_at": str(cfg.get("llm_last_checked_at", "") or "").strip(),
-    }
-    if include_secret:
-        out["api_key"] = api_key
-    return out
-
-
-def get_llm_runtime_config(conn=None, include_secret=False):
-    if conn is not None:
-        return _read_llm_runtime_config(conn, include_secret=include_secret)
-    with db_connect() as conn2:
-        return _read_llm_runtime_config(conn2, include_secret=include_secret)
-
-
-def set_llm_runtime_config(
-    api_key="__UNCHANGED__",
-    model="__UNCHANGED__",
-    api_url="__UNCHANGED__",
-    last_status="__UNCHANGED__",
-    last_error="__UNCHANGED__",
-    last_checked_at="__UNCHANGED__",
-):
-    with db_connect() as conn:
-        if api_key != "__UNCHANGED__":
-            conn.execute(
-                """
-                INSERT INTO app_config(key, value, updated_at) VALUES ('llm_api_key', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (str(api_key or "").strip(), now_iso()),
-            )
-        if model != "__UNCHANGED__":
-            val = str(model or "").strip() or LLM_DEFAULT_MODEL
-            conn.execute(
-                """
-                INSERT INTO app_config(key, value, updated_at) VALUES ('llm_model', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (val, now_iso()),
-            )
-        if api_url != "__UNCHANGED__":
-            val = str(api_url or "").strip() or LLM_DEFAULT_API_URL
-            conn.execute(
-                """
-                INSERT INTO app_config(key, value, updated_at) VALUES ('llm_api_url', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (val, now_iso()),
-            )
-        if last_status != "__UNCHANGED__":
-            conn.execute(
-                """
-                INSERT INTO app_config(key, value, updated_at) VALUES ('llm_last_status', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (str(last_status or "").strip(), now_iso()),
-            )
-        if last_error != "__UNCHANGED__":
-            conn.execute(
-                """
-                INSERT INTO app_config(key, value, updated_at) VALUES ('llm_last_error', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (str(last_error or "").strip(), now_iso()),
-            )
-        if last_checked_at != "__UNCHANGED__":
-            conn.execute(
-                """
-                INSERT INTO app_config(key, value, updated_at) VALUES ('llm_last_checked_at', ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (str(last_checked_at or "").strip(), now_iso()),
-            )
-        conn.commit()
-
-
-def _update_llm_runtime_status(conn, status, error="", checked_at=None):
-    stamp = str(checked_at or now_iso())
-    conn.execute(
-        """
-        INSERT INTO app_config(key, value, updated_at) VALUES ('llm_last_status', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (str(status or "").strip(), now_iso()),
-    )
-    conn.execute(
-        """
-        INSERT INTO app_config(key, value, updated_at) VALUES ('llm_last_error', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (str(error or "").strip(), now_iso()),
-    )
-    conn.execute(
-        """
-        INSERT INTO app_config(key, value, updated_at) VALUES ('llm_last_checked_at', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (stamp, now_iso()),
-    )
-
-
-def _extract_llm_output_text(raw):
-    text = str((raw or {}).get("output_text") or "").strip()
-    if text:
-        return text
-    parts = []
-    for item in (raw or {}).get("output") or []:
-        for content in item.get("content") or []:
-            if str(content.get("type") or "") == "output_text":
-                t = str(content.get("text") or "").strip()
-                if t:
-                    parts.append(t)
-    return "\n".join(parts).strip()
-
-
-def try_parse_json_object(text):
-    raw = str(text or "").strip()
-    if not raw:
-        return {}
-    candidates = [raw]
-    if raw.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        candidates.append(cleaned.strip())
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        candidates.append(raw[start : end + 1].strip())
-    seen = set()
-    for cand in candidates:
-        if not cand or cand in seen:
-            continue
-        seen.add(cand)
-        try:
-            obj = json.loads(cand)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            pass
-        try:
-            obj = ast.literal_eval(cand)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            pass
-    return {}
-
-
-def call_llm_responses_api(system_prompt, user_payload, conn=None, max_output_tokens=500, timeout=12):
-    owns_conn = conn is None
-    if owns_conn:
-        conn = db_connect()
-    try:
-        cfg = _read_llm_runtime_config(conn, include_secret=True)
-        api_key = str(cfg.get("api_key") or "").strip()
-        if not api_key:
-            _update_llm_runtime_status(conn, "not_configured", "LLM API key not configured.")
-            conn.commit()
-            raise RuntimeError("LLM API key not configured.")
-        payload = {
-            "model": str(cfg.get("model") or LLM_DEFAULT_MODEL),
-            "input": [
-                {"role": "system", "content": str(system_prompt or "").strip()},
-                {
-                    "role": "user",
-                    "content": json.dumps(user_payload, ensure_ascii=True) if not isinstance(user_payload, str) else str(user_payload),
-                },
-            ],
-            "max_output_tokens": max(32, int(max_output_tokens)),
-        }
-        req = urllib.request.Request(
-            str(cfg.get("api_url") or LLM_DEFAULT_API_URL),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=max(3, int(timeout))) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
-        except Exception as ex:
-            _update_llm_runtime_status(conn, "error", str(ex))
-            conn.commit()
-            raise RuntimeError(f"LLM request failed: {str(ex)}")
-        text = _extract_llm_output_text(raw)
-        if not text:
-            _update_llm_runtime_status(conn, "error", "LLM returned empty analysis.")
-            conn.commit()
-            raise RuntimeError("LLM returned empty analysis.")
-        _update_llm_runtime_status(conn, "ok", "")
-        conn.commit()
-        return {
-            "provider": "openai_responses",
-            "model": str(cfg.get("model") or LLM_DEFAULT_MODEL),
-            "api_url": str(cfg.get("api_url") or LLM_DEFAULT_API_URL),
-            "text": text,
-            "raw": raw,
-        }
-    finally:
-        if owns_conn and conn is not None:
-            conn.close()
-
-
-def test_llm_runtime(conn=None):
-    result = call_llm_responses_api(
-        system_prompt="Return a short response confirming the model is reachable.",
-        user_payload={"task": "connectivity_test", "reply_format": "one short line"},
-        conn=conn,
-        max_output_tokens=40,
-        timeout=10,
-    )
-    return {
-        "ok": True,
-        "status": "ok",
-        "provider": result.get("provider"),
-        "model": result.get("model"),
-        "message": result.get("text"),
-        "config": get_llm_runtime_config(conn=conn, include_secret=False),
-    }
-
 
 def _clean_rss_text(text):
     s = str(text or "")
@@ -4554,12 +4297,11 @@ def build_agents_status(conn):
                 f"weak_sources={int(parse_float(perf_latest['weak_sources_count'], 0.0))}; "
                 f"latency_ms={round(parse_float(perf_latest['avg_quote_latency_ms'], 0.0), 1)}; "
                 f"success={round(parse_float(perf_latest['quote_success_rate'], 0.0) * 100.0, 1)}%; "
-                f"llm={str(perf_cfg.get('llm_status') or '-').lower()}; "
                 f"retention={int(parse_float(perf_cfg.get('retention_days'), 90))}d; "
                 f"last_cleanup={perf_cfg.get('last_cleanup_at') or '-'}"
                 if perf_latest
                 else (
-                    "no snapshots yet; tracks runtime health, applies safe self-heal, writes LLM-guided reviewed draft improvements"
+                    "no snapshots yet; tracks runtime health, applies safe self-heal, writes reviewed draft improvements"
                 )
             ),
         },
@@ -4716,7 +4458,6 @@ def refresh_attention_alerts(conn):
     tax_cfg = get_tax_profile_config(conn)
     tax_monitor_cfg = get_tax_monitor_config(conn)
     repo_cfg = get_repo_sync_config(conn)
-    llm_cfg = get_llm_runtime_config(conn, include_secret=False)
     perf_latest_row = conn.execute(
         """
         SELECT created_at, issue_count, live_stale_symbols, live_missing_price_symbols, weak_sources_count
@@ -4756,18 +4497,7 @@ def refresh_attention_alerts(conn):
     else:
         resolve_attention_alert(conn, "REPO_SYNC_ERROR")
 
-    if str(llm_cfg.get("last_status") or "").lower() == "error" and str(llm_cfg.get("last_error") or "").strip():
-        upsert_attention_alert(
-            conn,
-            "LLM_RUNTIME_ERROR",
-            "llm",
-            52,
-            "warning",
-            "LLM runtime reported an error",
-            detail=str(llm_cfg.get("last_error") or ""),
-        )
-    else:
-        resolve_attention_alert(conn, "LLM_RUNTIME_ERROR")
+    resolve_attention_alert(conn, "LLM_RUNTIME_ERROR")
 
     perf_issue_count = int(parse_float(perf_latest.get("issue_count"), 0.0)) if perf_latest else 0
     if perf_issue_count > 0:
@@ -9578,46 +9308,15 @@ def build_tax_harvest_heuristic_analysis(plan):
     }
 
 
-def run_tax_harvest_llm_analysis(plan):
-    fallback = build_tax_harvest_heuristic_analysis(plan)
-    summary = plan.get("summary") or {}
-    harvest = list(plan.get("harvest_candidates") or [])[:8]
-    offsets = list(plan.get("profit_offset_candidates") or [])[:8]
-    macro = plan.get("macro") or {}
-    try:
-        result = call_llm_responses_api(
-            system_prompt=(
-                "You are a portfolio tax-loss harvesting analyst. "
-                "Be concise, practical, and explain which positions are better to harvest now "
-                "versus defer, using only the supplied portfolio intelligence."
-            ),
-            user_payload={
-                "task": "Advise on current tax-loss harvesting and profit-offset candidates.",
-                "summary": summary,
-                "macro": macro,
-                "harvest_candidates": harvest,
-                "profit_offset_candidates": offsets,
-            },
-            max_output_tokens=500,
-            timeout=12,
-        )
-    except Exception as ex:
-        fallback["error"] = str(ex)
-        return fallback
-    text = str(result.get("text") or "").strip()
-    if not text:
-        fallback["error"] = "LLM returned empty analysis."
-        return fallback
-    return {
-        "mode": "llm",
-        "provider": str(result.get("provider") or "openai_responses"),
-        "model": str(result.get("model") or LLM_DEFAULT_MODEL),
-        "text": text,
-        "error": None,
-    }
+def run_tax_harvest_dynamic_analysis(plan):
+    out = build_tax_harvest_heuristic_analysis(plan)
+    out["mode"] = "local_dynamic_analysis"
+    out["provider"] = "local_rules"
+    out["model"] = None
+    return out
 
 
-def build_tax_harvest_plan(conn, target_loss=0.0, run_llm=False):
+def build_tax_harvest_plan(conn, target_loss=0.0, run_analysis=False):
     try:
         target_loss_v = max(0.0, parse_float(target_loss, 0.0))
     except Exception:
@@ -9915,15 +9614,15 @@ def build_tax_harvest_plan(conn, target_loss=0.0, run_llm=False):
                 "profit_offset_candidates": profit_rows,
             }
         ),
-        "llm_enabled": bool(get_llm_runtime_config(conn, include_secret=False).get("configured")),
+        "analysis_engine": "local_rules",
     }
-    if run_llm:
-        plan["analysis"] = run_tax_harvest_llm_analysis(plan)
+    if run_analysis:
+        plan["analysis"] = run_tax_harvest_dynamic_analysis(plan)
     return plan
 
 
 def build_loss_lot_analysis(conn):
-    plan = build_tax_harvest_plan(conn, target_loss=0.0, run_llm=False)
+    plan = build_tax_harvest_plan(conn, target_loss=0.0, run_analysis=False)
     harvest = list(plan.get("harvest_candidates") or [])
     profits = list(plan.get("profit_offset_candidates") or [])
     stcg_rows = [r for r in harvest if str(r.get("tax_bucket") or "").upper() == "STCG"]
@@ -11658,13 +11357,6 @@ def compute_daily_target_performance(conn):
         latest_balance = realized_compounded_capital
     compounded_return_value = round(latest_balance - starting_capital, 2)
     compounded_return_pct = round((compounded_return_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0
-    # Post-tax estimate: DT trades are all short-term (STCG at 20%).
-    # Tax applies only to the gain portion; losses are not taxed.
-    stcg_rate = DAILY_TARGET_EQUITY_STCG_TAX_PCT / 100.0
-    realized_stcg_tax_estimate = round(max(0.0, realized_profit_value) * stcg_rate, 2)
-    realized_profit_post_tax = round(realized_profit_value - realized_stcg_tax_estimate, 2)
-    compounded_capital_post_tax = round(starting_capital + realized_profit_post_tax, 2)
-    compounded_return_pct_post_tax = round((realized_profit_post_tax / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0
     return {
         "starting_capital": round(starting_capital, 2),
         "current_compounded_capital": round(latest_balance, 2),
@@ -11673,10 +11365,6 @@ def compute_daily_target_performance(conn):
         "realized_compounded_capital": realized_compounded_capital,
         "realized_profit_value": realized_profit_value,
         "realized_profit_pct": round((realized_profit_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0,
-        "realized_stcg_tax_estimate": realized_stcg_tax_estimate,
-        "realized_profit_post_tax": realized_profit_post_tax,
-        "compounded_capital_post_tax": compounded_capital_post_tax,
-        "compounded_return_pct_post_tax": compounded_return_pct_post_tax,
         "executed_rotation_count": executed_rotation_count,
         "open_position_count": len(open_positions),
         "cumulative_sell_value": round(cumulative_sell_value, 2),
@@ -13218,7 +12906,7 @@ def build_approval_verification_payload(conn, approval_limit=120, action_limit=1
         (
             a
             for a in actions
-            if str(a.get("action_type") or "").lower() in ("auto_tune", "llm_improvement", "write_draft")
+            if str(a.get("action_type") or "").lower() in ("auto_tune", "write_draft")
         ),
         None,
     )
@@ -13252,17 +12940,15 @@ def build_approval_verification_payload(conn, approval_limit=120, action_limit=1
             bits.append("updates=" + ", ".join([f"{k}:{v}" for k, v in list(details["updates"].items())[:8]]))
         if isinstance(details.get("suggested_live_config_updates"), dict) and details.get("suggested_live_config_updates"):
             bits.append(
-                "llm_updates="
+                "suggested_updates="
                 + ", ".join([f"{k}:{v}" for k, v in list(details["suggested_live_config_updates"].items())[:8]])
             )
         if isinstance(details.get("actions"), list) and details.get("actions"):
             bits.append("actions=" + ", ".join([str(x) for x in details.get("actions", [])[:8]]))
         if isinstance(details.get("errors"), list) and details.get("errors"):
             bits.append("errors=" + "; ".join([str(x) for x in details.get("errors", [])[:4]]))
-        if details.get("llm_status"):
-            bits.append(f"llm={details.get('llm_status')}")
-        if details.get("model"):
-            bits.append(f"model={details.get('model')}")
+        if details.get("analysis_engine"):
+            bits.append(f"engine={details.get('analysis_engine')}")
         if details.get("error"):
             bits.append(f"error={details.get('error')}")
         if details.get("path"):
@@ -13306,8 +12992,8 @@ def build_approval_verification_payload(conn, approval_limit=120, action_limit=1
             "summary": {
                 "draft_updates_total": len(draft_checks),
                 "draft_updates_applied": sum(1 for x in draft_checks if x.get("applied")),
-                "llm_updates_total": len(auto_checks),
-                "llm_updates_applied": sum(1 for x in auto_checks if x.get("applied")),
+                "auto_updates_total": len(auto_checks),
+                "auto_updates_applied": sum(1 for x in auto_checks if x.get("applied")),
             },
         },
         "change_summary": change_summary,
@@ -17525,37 +17211,6 @@ def _portfolio_return_metrics(conn, market_value, cash_balance):
     }
 
 
-def _compute_portfolio_unrealized_tax_estimate(conn, realized_tax_summary, tax_cfg, split_map=None):
-    """Estimate income tax liability on all open equity lots if closed today."""
-    symbols = [
-        r["symbol"]
-        for r in conn.execute(
-            "SELECT h.symbol FROM holdings h LEFT JOIN instruments i ON UPPER(i.symbol)=UPPER(h.symbol) WHERE UPPER(COALESCE(i.asset_class,'EQUITY'))<>'GOLD' AND COALESCE(h.qty,0)>0"
-        ).fetchall()
-    ]
-    stcg_unrealized_gain = 0.0
-    ltcg_unrealized_gain = 0.0
-    for sym in symbols:
-        for lot in open_lot_tax_bucket_rows(conn, sym, split_map=split_map):
-            upl = parse_float(lot.get("unrealized_pnl"), 0.0)
-            if upl <= 0:
-                continue
-            if str(lot.get("tax_bucket") or "STCG").upper() == "LTCG":
-                ltcg_unrealized_gain += upl
-            else:
-                stcg_unrealized_gain += upl
-    stcg_rate = _daily_target_equity_tax_rate("STCG", tax_cfg)
-    ltcg_rate = _daily_target_equity_tax_rate("LTCG", tax_cfg)
-    ltcg_remaining_exemption = max(0.0, parse_float(realized_tax_summary.get("ltcg_remaining_exemption"), parse_float(tax_cfg.get("ltcg_exemption_limit"), DAILY_TARGET_LTCG_EXEMPTION_LIMIT)))
-    ltcg_taxable = max(0.0, ltcg_unrealized_gain - ltcg_remaining_exemption)
-    return {
-        "stcg_unrealized_gain": round(stcg_unrealized_gain, 2),
-        "ltcg_unrealized_gain": round(ltcg_unrealized_gain, 2),
-        "stcg_unrealized_tax": round(stcg_unrealized_gain * stcg_rate, 2),
-        "ltcg_unrealized_tax": round(ltcg_taxable * ltcg_rate, 2),
-        "total_unrealized_tax": round(stcg_unrealized_gain * stcg_rate + ltcg_taxable * ltcg_rate, 2),
-    }
-
 
 def portfolio_summary(conn):
     row = conn.execute(
@@ -17621,19 +17276,6 @@ def portfolio_summary(conn):
             prev_day_value += qty * prev_close
     today_change_pct = (today_pnl / prev_day_value * 100.0) if prev_day_value > 0 else 0.0
     return_metrics = _portfolio_return_metrics(conn, market, parse_float(cash_row["cash_balance"], 0.0))
-    # Post-tax estimates: FY realized tax + estimated unrealized tax if closed today
-    tax_cfg = get_tax_profile_config(conn)
-    fy_tax = compute_realized_equity_tax_summary(conn)
-    split_map = load_split_map(conn)
-    unreal_tax = _compute_portfolio_unrealized_tax_estimate(conn, fy_tax, tax_cfg, split_map=split_map)
-    stcg_rate = _daily_target_equity_tax_rate("STCG", tax_cfg)
-    ltcg_rate = _daily_target_equity_tax_rate("LTCG", tax_cfg)
-    ltcg_taxable = max(0.0, parse_float(fy_tax.get("ltcg_net_gain"), 0.0) - max(0.0, parse_float(fy_tax.get("ltcg_remaining_exemption"), 0.0)))
-    fy_realized_tax = round(parse_float(fy_tax.get("stcg_net_gain"), 0.0) * stcg_rate + ltcg_taxable * ltcg_rate, 2)
-    total_unrealized_tax = parse_float(unreal_tax.get("total_unrealized_tax"), 0.0)
-    estimated_total_tax = round(fy_realized_tax + total_unrealized_tax, 2)
-    post_tax_total_pnl = round(total_pnl - estimated_total_tax, 2)
-    post_tax_return_pct = round(post_tax_total_pnl / hand_invested * 100.0, 2) if hand_invested > 0 else 0.0
     return {
         "invested": round(hand_invested, 2),
         "hand_invested": round(hand_invested, 2),
@@ -17649,14 +17291,6 @@ def portfolio_summary(conn):
         "cagr_pct": round(parse_float(return_metrics.get("cagr_pct"), 0.0), 2),
         "xirr_pct": round(parse_float(return_metrics.get("xirr_pct"), 0.0), 2),
         "cash_balance": round(parse_float(cash_row["cash_balance"], 0.0), 2),
-        "fy_label": str(fy_tax.get("fy_label") or ""),
-        "fy_stcg_net_gain": round(parse_float(fy_tax.get("stcg_net_gain"), 0.0), 2),
-        "fy_ltcg_net_gain": round(parse_float(fy_tax.get("ltcg_net_gain"), 0.0), 2),
-        "fy_realized_tax": round(fy_realized_tax, 2),
-        "estimated_unrealized_tax": round(total_unrealized_tax, 2),
-        "estimated_total_tax": round(estimated_total_tax, 2),
-        "post_tax_total_pnl": post_tax_total_pnl,
-        "post_tax_return_pct": post_tax_return_pct,
         "as_of": now_iso(),
     }
 
@@ -18064,6 +17698,44 @@ def portfolio_timeseries(conn, from_s=None, to_s=None):
     return points
 
 
+class PayloadTooLarge(ValueError):
+    pass
+
+
+def _same_origin_allowed(handler):
+    origin = str(handler.headers.get("Origin") or "").strip()
+    if not origin:
+        return True
+    try:
+        parsed = urllib.parse.urlparse(origin)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except Exception:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"} and (
+        port is None or int(port) == int(handler.server.server_address[1])
+    )
+
+
+def _cors_origin(handler):
+    origin = str(handler.headers.get("Origin") or "").strip()
+    return origin if origin and _same_origin_allowed(handler) else "http://127.0.0.1"
+
+
+def _validate_local_mutation(handler):
+    if not _same_origin_allowed(handler):
+        json_response(handler, {"error": "origin_not_allowed", "code": "ORIGIN_NOT_ALLOWED"}, HTTPStatus.FORBIDDEN)
+        return False
+    if str(handler.headers.get(LOCAL_MUTATION_HEADER) or "").strip() != "1":
+        json_response(
+            handler,
+            {"error": "local_mutation_header_required", "code": "LOCAL_MUTATION_HEADER_REQUIRED"},
+            HTTPStatus.FORBIDDEN,
+        )
+        return False
+    return True
+
+
 def json_response(handler, payload, status=HTTPStatus.OK):
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
@@ -18082,9 +17754,9 @@ def json_response(handler, payload, status=HTTPStatus.OK):
         handler.send_header("Content-Type", "application/json; charset=utf-8")
         handler.send_header("Content-Length", str(len(raw)))
         handler.send_header("Cache-Control", "no-store")
-        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.send_header("Access-Control-Allow-Origin", _cors_origin(handler))
         handler.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-        handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+        handler.send_header("Access-Control-Allow-Headers", f"Content-Type,{LOCAL_MUTATION_HEADER}")
         handler.end_headers()
         handler.wfile.write(raw)
     except Exception as exc:
@@ -18099,9 +17771,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", _cors_origin(self))
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type,{LOCAL_MUTATION_HEADER}")
         self.end_headers()
 
     def do_GET(self):
@@ -18131,9 +17803,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         if not parsed.path.startswith("/api/v1/"):
             json_response(self, {"error": "not_found"}, HTTPStatus.NOT_FOUND)
             return
+        if not _validate_local_mutation(self):
+            return
         try:
             self._activate_request_tenant(parsed)
             self.handle_api_post(parsed)
+        except PayloadTooLarge as exc:
+            json_response(self, {"error": str(exc), "code": "PAYLOAD_TOO_LARGE"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         except ValueError as exc:
             json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -18146,9 +17822,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         if not parsed.path.startswith("/api/v1/"):
             json_response(self, {"error": "not_found"}, HTTPStatus.NOT_FOUND)
             return
+        if not _validate_local_mutation(self):
+            return
         try:
             self._activate_request_tenant(parsed)
             self.handle_api_put(parsed)
+        except PayloadTooLarge as exc:
+            json_response(self, {"error": str(exc), "code": "PAYLOAD_TOO_LARGE"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         except ValueError as exc:
             json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -18160,6 +17840,8 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if not parsed.path.startswith("/api/v1/"):
             json_response(self, {"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        if not _validate_local_mutation(self):
             return
         try:
             self._activate_request_tenant(parsed)
@@ -18175,6 +17857,8 @@ class AppHandler(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             return {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise PayloadTooLarge(f"payload_too_large_max_{MAX_JSON_BODY_BYTES}_bytes")
         raw = self.rfile.read(length)
         if not raw:
             return {}
@@ -18746,18 +18430,18 @@ class AppHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/v1/harvest/plan":
                 target_loss_raw = qs.get("target_loss", ["0"])[0]
-                run_llm_raw = qs.get("run_llm", ["0"])[0]
+                run_analysis_raw = qs.get("run_analysis", ["0"])[0]
                 try:
                     target_loss = max(0.0, parse_float(target_loss_raw, 0.0))
                 except Exception:
                     json_response(self, {"error": "target_loss_must_be_numeric"}, HTTPStatus.BAD_REQUEST)
                     return
                 try:
-                    run_llm = parse_bool(run_llm_raw, default=False)
+                    run_analysis = parse_bool(run_analysis_raw, default=False)
                 except ValueError:
-                    json_response(self, {"error": "run_llm_must_be_boolean"}, HTTPStatus.BAD_REQUEST)
+                    json_response(self, {"error": "run_analysis_must_be_boolean"}, HTTPStatus.BAD_REQUEST)
                     return
-                json_response(self, build_tax_harvest_plan(conn, target_loss=target_loss, run_llm=run_llm))
+                json_response(self, build_tax_harvest_plan(conn, target_loss=target_loss, run_analysis=run_analysis))
                 return
 
             if path == "/api/v1/loss-lots":
@@ -18846,10 +18530,6 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "actions": acts,
                     },
                 )
-                return
-
-            if path == "/api/v1/llm/config":
-                json_response(self, get_llm_runtime_config(conn, include_secret=False))
                 return
 
             if path == "/api/v1/agents/risk-analysis":
@@ -19087,25 +18767,6 @@ class AppHandler(SimpleHTTPRequestHandler):
                 out = assistant_chat_response(conn, message)
             if out.get("executed") and out.get("intent") == "delete_by_notes":
                 recompute_holdings_and_signals()
-            json_response(self, out)
-            return
-
-        if parsed.path == "/api/v1/llm/test":
-            with db_connect() as conn:
-                try:
-                    out = test_llm_runtime(conn)
-                except Exception as ex:
-                    json_response(
-                        self,
-                        {
-                            "ok": False,
-                            "status": "error",
-                            "message": str(ex),
-                            "config": get_llm_runtime_config(conn, include_secret=False),
-                        },
-                        HTTPStatus.BAD_REQUEST,
-                    )
-                    return
             json_response(self, out)
             return
 
@@ -19847,36 +19508,6 @@ class AppHandler(SimpleHTTPRequestHandler):
                     "items": list_tenants(),
                 },
             )
-            return
-
-        if parsed.path == "/api/v1/llm/config":
-            body = self._read_json()
-            api_key_raw = body.get("api_key", "__UNCHANGED__")
-            model_raw = body.get("model", "__UNCHANGED__")
-            api_url_raw = body.get("api_url", "__UNCHANGED__")
-            if model_raw != "__UNCHANGED__" and not str(model_raw or "").strip():
-                json_response(self, {"error": "model_required"}, HTTPStatus.BAD_REQUEST)
-                return
-            if api_url_raw != "__UNCHANGED__":
-                parsed_url = urllib.parse.urlparse(str(api_url_raw or "").strip() or LLM_DEFAULT_API_URL)
-                if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
-                    json_response(self, {"error": "api_url_invalid"}, HTTPStatus.BAD_REQUEST)
-                    return
-            set_llm_runtime_config(
-                api_key=api_key_raw,
-                model=model_raw,
-                api_url=api_url_raw,
-            )
-            with db_connect() as conn:
-                cfg = get_llm_runtime_config(conn, include_secret=False)
-                _update_llm_runtime_status(
-                    conn,
-                    "ready" if cfg.get("configured") else "not_configured",
-                    "" if cfg.get("configured") else "LLM API key not configured.",
-                    checked_at="",
-                )
-                conn.commit()
-                json_response(self, {"ok": True, "config": get_llm_runtime_config(conn, include_secret=False)})
             return
 
         if parsed.path == "/api/v1/scrips/position-guards":
@@ -20767,6 +20398,13 @@ def serve(port):
     init_db()
     repair_results = repair_all_tenants_market_data_once()
     export_repo_data_snapshots()
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
+    except OSError as exc:
+        raise RuntimeError(
+            f"port_bind_failed: 127.0.0.1:{port} is unavailable. "
+            "Close the existing app instance or start with --port 8081."
+        ) from exc
     stop_event = threading.Event()
     worker = threading.Thread(target=live_price_worker, args=(stop_event,), daemon=True)
     backup_worker = threading.Thread(target=db_backup_worker, args=(stop_event,), daemon=True)
@@ -20788,7 +20426,6 @@ def serve(port):
     software_worker.start()
     risk_worker.start()
     tax_worker.start()
-    server = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
     active_key = get_active_tenant_key()
     p = tenant_paths(active_key)
     print(f"Portfolio Agent running at http://127.0.0.1:{port}")
@@ -20864,4 +20501,3 @@ risk_analysis_worker = _mod_risk_analysis_worker
 
 if __name__ == "__main__":
     main()
-

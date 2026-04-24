@@ -54,7 +54,6 @@ def get_software_perf_agent_config(conn):
     ).strip()
     if not core_objective:
         core_objective = "Preserve portfolio data integrity and strategy objective."
-    llm_cfg = core.get_llm_runtime_config(conn, include_secret=False)
     return {
         "enabled": enabled,
         "interval_seconds": max(core.SOFTWARE_PERF_AGENT_MIN_INTERVAL_SEC, min(7 * 24 * 60 * 60, interval_sec)),
@@ -66,11 +65,6 @@ def get_software_perf_agent_config(conn):
         "auto_tune": auto_tune,
         "write_changes": write_changes,
         "core_objective": core_objective,
-        "llm_configured": bool(llm_cfg.get("configured")),
-        "llm_model": str(llm_cfg.get("model") or ""),
-        "llm_status": str(llm_cfg.get("last_status") or ""),
-        "llm_last_error": str(llm_cfg.get("last_error") or ""),
-        "llm_last_checked_at": str(llm_cfg.get("last_checked_at") or ""),
     }
 
 
@@ -393,12 +387,7 @@ def _software_perf_base_proposal(snapshot, after_snapshot, cfg, actions=None, er
         "action_context": list(actions or []),
         "errors": list(errors or []),
         "core_guard": dict(core_guard or {"ok": True, "drift": {}}),
-        "llm": {
-            "status": "pending",
-            "provider": "openai_responses",
-            "model": "",
-            "error": "",
-        },
+        "analysis_engine": "local_rules",
         "notes": [
             "Draft only: this file is generated for review and is not auto-imported by the runtime.",
             "Core objective guard: do not edit trade/instrument/strategy schema or destructive paths.",
@@ -407,8 +396,7 @@ def _software_perf_base_proposal(snapshot, after_snapshot, cfg, actions=None, er
     return proposal
 
 
-def _software_perf_generate_llm_proposal(snapshot, after_snapshot, cfg, actions=None, errors=None, core_guard=None):
-    core = _core()
+def _software_perf_generate_local_proposal(snapshot, after_snapshot, cfg, actions=None, errors=None, core_guard=None):
     proposal = _software_perf_base_proposal(
         snapshot,
         after_snapshot,
@@ -417,70 +405,7 @@ def _software_perf_generate_llm_proposal(snapshot, after_snapshot, cfg, actions=
         errors=errors,
         core_guard=core_guard,
     )
-    llm_cfg = core.get_llm_runtime_config(include_secret=False)
-    proposal["llm"]["model"] = str(llm_cfg.get("model") or "")
-    if not llm_cfg.get("configured"):
-        proposal["llm"]["status"] = "not_configured"
-        proposal["llm"]["error"] = "LLM API key not configured."
-        return proposal
-    prompt_payload = {
-        "task": "Generate an educated software-improvement proposal for the portfolio agent runtime.",
-        "core_objective": proposal["core_objective"],
-        "before_snapshot": snapshot,
-        "after_snapshot": after_snapshot,
-        "recent_actions": list(actions or []),
-        "runtime_errors": list(errors or []),
-        "core_guard": dict(core_guard or {"ok": True, "drift": {}}),
-        "response_contract": {
-            "analysis_summary": "string",
-            "suggested_live_config_updates": {"optional_setting": "value"},
-            "suggested_code_changes": [
-                {
-                    "file": "relative/path.py",
-                    "change_type": "bugfix|observability|guardrail|test",
-                    "summary": "what should change",
-                    "reason": "why this is the right correction",
-                    "risk": "low|medium|high",
-                }
-            ],
-            "tests_to_add": ["list of tests"],
-            "observability_additions": ["logs, alerts, metrics to add"],
-        },
-    }
-    try:
-        result = core.call_llm_responses_api(
-            system_prompt=(
-                "You are a senior Python reliability engineer. "
-                "Produce a concise JSON object only. "
-                "Recommend specific code-level fixes and guardrails. "
-                "Do not suggest destructive schema changes. "
-                "Preserve the stated core objective."
-            ),
-            user_payload=prompt_payload,
-            max_output_tokens=900,
-            timeout=18,
-        )
-    except Exception as ex:
-        proposal["llm"]["status"] = "error"
-        proposal["llm"]["error"] = str(ex)
-        return proposal
-    parsed = core.try_parse_json_object(result.get("text"))
-    proposal["llm"]["status"] = "ok"
-    proposal["llm"]["provider"] = str(result.get("provider") or "openai_responses")
-    proposal["llm"]["model"] = str(result.get("model") or llm_cfg.get("model") or "")
-    if not parsed:
-        proposal["llm"]["status"] = "error"
-        proposal["llm"]["error"] = "LLM response was not valid JSON."
-        return proposal
-    proposal["analysis_summary"] = str(parsed.get("analysis_summary") or proposal.get("analysis_summary") or "")
-    proposal["suggested_live_config_updates"] = dict(parsed.get("suggested_live_config_updates") or {})
-    proposal["suggested_code_changes"] = [
-        x for x in (parsed.get("suggested_code_changes") or []) if isinstance(x, dict)
-    ][:12]
-    proposal["tests_to_add"] = [str(x) for x in (parsed.get("tests_to_add") or []) if str(x or "").strip()][:12]
-    proposal["observability_additions"] = [
-        str(x) for x in (parsed.get("observability_additions") or []) if str(x or "").strip()
-    ][:12]
+    proposal["analysis_engine"] = "local_rules"
     return proposal
 
 
@@ -573,7 +498,7 @@ def run_software_perf_agent_once(max_runtime_sec=60, force=False):
     draft_path = ""
     core_guard = {"ok": True, "drift": {}}
     cleanup = {}
-    llm_improvement = {}
+    improvement = {}
 
     cleanup_age = _iso_age_seconds(cfg.get("last_cleanup_at"))
     cleanup_due = force or cleanup_age is None or cleanup_age >= SOFTWARE_PERF_CLEANUP_INTERVAL_SEC
@@ -644,7 +569,7 @@ def run_software_perf_agent_once(max_runtime_sec=60, force=False):
     if cfg.get("auto_tune") and cfg.get("write_changes") and (time.time() - t0) < runtime_cap and improve_due and (
         needs_heal or int(core.parse_float(after.get("issue_count"), 0.0)) > 0 or force
     ):
-        llm_improvement = _software_perf_generate_llm_proposal(
+        improvement = _software_perf_generate_local_proposal(
             before,
             after,
             cfg,
@@ -652,42 +577,26 @@ def run_software_perf_agent_once(max_runtime_sec=60, force=False):
             errors=errors,
             core_guard=core_guard,
         )
-        llm_status = str(((llm_improvement or {}).get("llm") or {}).get("status") or "").strip().lower()
-        llm_details = {
-            "llm_status": llm_status or "unknown",
-            "model": ((llm_improvement or {}).get("llm") or {}).get("model"),
-            "error": ((llm_improvement or {}).get("llm") or {}).get("error"),
-            "suggested_live_config_updates": dict((llm_improvement or {}).get("suggested_live_config_updates") or {}),
-            "suggested_code_changes": len((llm_improvement or {}).get("suggested_code_changes") or []),
+        details = {
+            "analysis_engine": "local_rules",
+            "suggested_live_config_updates": dict((improvement or {}).get("suggested_live_config_updates") or {}),
+            "suggested_code_changes": len((improvement or {}).get("suggested_code_changes") or []),
         }
-        if llm_status == "ok":
-            try:
-                draft_path = _software_perf_write_improvement_draft(llm_improvement, cfg)
-                actions.append("write_improvement_draft")
-                set_software_perf_agent_config(last_improvement_at=core.now_iso())
-                with core.db_connect() as conn:
-                    _software_perf_log_action(
-                        conn,
-                        action_type="write_draft",
-                        status="ok",
-                        summary="Wrote LLM-guided software-improvement draft file.",
-                        details={**llm_details, "path": draft_path},
-                    )
-                    conn.commit()
-            except Exception as ex:
-                errors.append(f"write_draft_failed:{str(ex)}")
-        else:
-            err_msg = str(llm_details.get("error") or "LLM improvement proposal unavailable.")
-            errors.append(f"llm_improvement_failed:{err_msg}")
+        try:
+            draft_path = _software_perf_write_improvement_draft(improvement, cfg)
+            actions.append("write_improvement_draft")
+            set_software_perf_agent_config(last_improvement_at=core.now_iso())
             with core.db_connect() as conn:
                 _software_perf_log_action(
                     conn,
-                    action_type="llm_improvement",
-                    status="error",
-                    summary="LLM software-improvement proposal failed.",
-                    details=llm_details,
+                    action_type="write_draft",
+                    status="ok",
+                    summary="Wrote local-rule software-improvement draft file.",
+                    details={**details, "path": draft_path},
                 )
                 conn.commit()
+        except Exception as ex:
+            errors.append(f"write_draft_failed:{str(ex)}")
 
     set_software_perf_agent_config(last_run_at=core.now_iso())
     return {
@@ -700,7 +609,7 @@ def run_software_perf_agent_once(max_runtime_sec=60, force=False):
         "tune_updates": {},
         "draft_path": draft_path,
         "cleanup": cleanup,
-        "llm_improvement": llm_improvement,
+        "improvement": improvement,
         "before": before,
         "after": after,
     }

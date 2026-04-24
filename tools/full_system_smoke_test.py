@@ -116,6 +116,8 @@ def run():
     def req(method, path, body=None, expected=None):
         headers = {}
         data = None
+        if method.upper() in {"POST", "PUT", "DELETE"}:
+            headers["X-Portfolio-Agent-Local"] = "1"
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -451,14 +453,14 @@ def run():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
-        expect("def build_tax_harvest_plan(conn, target_loss=0.0, run_llm=False):" in py, "harvest planner backend missing")
+        expect("def build_tax_harvest_plan(conn, target_loss=0.0, run_analysis=False):" in py, "harvest planner backend missing")
         expect("def open_lot_tax_bucket_summary(" in py, "harvest planner tax-bucket lot helper missing")
         expect("def open_lot_tax_bucket_rows(" in py, "harvest planner lot-level helper missing")
         expect("def build_loss_lot_analysis(conn):" in py, "loss lot analysis backend missing")
         expect("/api/v1/loss-lots" in py, "loss lot analysis endpoint missing")
         expect("total_loss_available_stcg" in py and "suggested_offset_profit_ltcg" in py, "harvest planner summary lacks tax-bucket totals")
         expect("/api/v1/harvest/plan" in py, "harvest planner endpoint missing")
-        expect("run_tax_harvest_llm_analysis" in py, "harvest planner llm hook missing")
+        expect("run_tax_harvest_dynamic_analysis" in py, "harvest planner local dynamic-analysis hook missing")
         expect('data-tab="harvest"' in html, "harvest tab missing in ui")
         expect('data-tab="losslots"' in html, "loss lots tab missing in ui")
         expect("<th>Tax</th>" in html and "<th>Held Days</th>" in html and "<th>Buy Date</th>" in html, "harvest ui missing lot-level columns")
@@ -482,20 +484,19 @@ def run():
         expect("harvestRunAnalysisBtn" in js, "harvest dynamic analysis button not wired")
 
     check("harvest_planner_contract", harvest_planner_contract)
-    def llm_runtime_contract():
+    def no_llm_runtime_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
         perf = (root / "portfolio_agent" / "software_performance.py").read_text(encoding="utf-8")
-        expect("def get_llm_runtime_config(" in py, "llm runtime config helper missing")
-        expect("/api/v1/llm/config" in py, "llm config endpoint missing")
-        expect("/api/v1/llm/test" in py, "llm test endpoint missing")
-        expect("function loadLlmConfig(options = {})" in js, "llm config ui loader missing")
-        expect("saveLlmConfigBtn" in js and "testLlmConfigBtn" in js, "llm buttons not wired")
-        expect('id="llmApiKeyInput"' in html, "llm api key input missing")
-        expect("def _software_perf_generate_llm_proposal(" in perf, "software perf llm proposal generator missing")
+        expect("/api/v1/llm/config" not in py, "llm config endpoint should be removed")
+        expect("/api/v1/llm/test" not in py, "llm test endpoint should be removed")
+        expect("loadLlmConfig" not in js, "llm config ui loader should be removed")
+        expect("saveLlmConfigBtn" not in js and "testLlmConfigBtn" not in js, "llm buttons should be removed")
+        expect('id="llmApiKeyInput"' not in html, "llm api key input should be removed")
+        expect("_software_perf_generate_local_proposal" in perf, "software perf local proposal generator missing")
 
-    check("llm_runtime_contract", llm_runtime_contract)
+    check("no_llm_runtime_contract", no_llm_runtime_contract)
     def equity_gold_source_guard_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         expect('if source == "gold_rate_scrape" and ac != ASSET_CLASS_GOLD:' in py, "equity gold-source plausibility guard missing")
@@ -619,7 +620,6 @@ def run():
     check("kitex_day_change_prefers_exchange", kitex_day_change_prefers_exchange)
     check("prices_status", lambda: req("GET", "/api/v1/prices/status", expected=200))
     check("prices_sources", lambda: req("GET", "/api/v1/prices/sources?symbol=KITEX&limit=50", expected=200))
-    check("llm_config_get", lambda: req("GET", "/api/v1/llm/config", expected=200))
     def daily_target_plan_runtime():
         _, out = req("GET", "/api/v1/daily-target/plan?seed_capital=10000&target_profit_pct=1&top_n=3&recalibrate=1", expected=200)
         summary = out.get("summary") or {}
@@ -810,7 +810,7 @@ def run():
                     expect("loss_available" in rows[0], f"{bucket} row missing loss_available")
 
     check("loss_lots", loss_lots_runtime)
-    check("harvest_plan_dynamic_analysis", lambda: req("GET", "/api/v1/harvest/plan?target_loss=250&run_llm=1", expected=200))
+    check("harvest_plan_dynamic_analysis", lambda: req("GET", "/api/v1/harvest/plan?target_loss=250&run_analysis=1", expected=200))
     check("summary", lambda: req("GET", "/api/v1/portfolio/summary", expected=200))
     check("performance", lambda: req("GET", "/api/v1/portfolio/performance?basis=1y", expected=200))
     check("timeseries", lambda: req("GET", "/api/v1/portfolio/timeseries", expected=200))

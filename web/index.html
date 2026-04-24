@@ -1108,23 +1108,6 @@
         </table>
       </div>
 
-      <h2 class="subhead">LLM Runtime</h2>
-      <p>Configure the model used for dynamic analysis and software-improvement proposals. Status and last error are shown here.</p>
-      <div class="row">
-        <label for="llmApiKeyInput">API Key</label>
-        <input id="llmApiKeyInput" type="password" placeholder="sk-..." style="min-width: 220px;">
-        <label for="llmModelInput">Model</label>
-        <input id="llmModelInput" type="text" value="gpt-4.1-mini" style="min-width: 160px;">
-        <label for="llmApiUrlInput">API URL</label>
-        <input id="llmApiUrlInput" type="text" value="https://api.openai.com/v1/responses" style="min-width: 280px; flex: 1;">
-      </div>
-      <div class="row">
-        <button id="saveLlmConfigBtn" class="btn secondary">Save LLM Settings</button>
-        <button id="testLlmConfigBtn" class="btn secondary">Test LLM</button>
-        <span id="llmStatusText" class="metric">LLM: -</span>
-      </div>
-      <div id="llmSummary" class="perf-summary"></div>
-
       <h2 class="subhead">Software Performance Log Viewer</h2>
       <p>Track what the Software Performance Agent changed, unresolved issues, and what got resolved.</p>
       <div class="row">

@@ -57,12 +57,12 @@ Full-stack local portfolio analytics app:
 1. Run:
 
 ```powershell
-python app.py
+powershell -ExecutionPolicy Bypass -File .\tools\run-app.ps1
 ```
 
 2. Open:
 
-`http://127.0.0.1:8080`
+The script starts on the first free local port from `8080` to `8089` and prints the URL.
 
 ## Code Structure
 
@@ -90,7 +90,7 @@ Refactor direction: continue moving domain logic from `app.py` into `portfolio_a
 - `--seed-xlsx` and `--xlsx-path` accept relative paths (resolved from project root).
 
 ```powershell
-python app.py --seed-xlsx data/Portfolio.xlsx
+.\.venv\Scripts\python.exe app.py --seed-xlsx data/Portfolio.xlsx
 ```
 
 ## Notes

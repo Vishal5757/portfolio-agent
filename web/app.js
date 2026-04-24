@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const LOCAL_MUTATION_HEADER = "X-Portfolio-Agent-Local";
 
 const state = {
   symbols: [],
@@ -47,7 +48,6 @@ const state = {
   dailyTargetPlanRaw: null,
   dailyTargetHistoryRaw: [],
   dailyTargetDrafts: {},
-  llmConfigRaw: null,
 };
 
 const money = (n) =>
@@ -89,9 +89,14 @@ function updateTradeUnitLabels(assetClass, symbol = "") {
 }
 
 async function api(path, opts = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    [LOCAL_MUTATION_HEADER]: "1",
+    ...(opts.headers || {}),
+  };
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers,
   });
   if (!res.ok) {
     const raw = await res.text();
@@ -626,7 +631,7 @@ function renderApprovalVerification(payload) {
       <div class="metric">Draft At: ${draft.generated_at || "-"}</div>
       <div class="metric">Draft Path: ${escapeHtml(draft.path || "-")}</div>
       <div class="metric">Draft Updates Applied: ${Number(summary.draft_updates_applied || 0)} / ${Number(summary.draft_updates_total || 0)}</div>
-      <div class="metric">LLM Suggested Updates Applied: ${Number(summary.llm_updates_applied || 0)} / ${Number(summary.llm_updates_total || 0)}</div>
+      <div class="metric">Auto Updates Applied: ${Number(summary.auto_updates_applied || 0)} / ${Number(summary.auto_updates_total || 0)}</div>
     `;
   }
 
@@ -727,7 +732,6 @@ function renderAgents(items) {
         if (agent === "market") {
           await loadLiveConfig();
         } else if (agent === "software_performance") {
-          await loadLlmConfig();
           await loadSoftwarePerfLogs();
         } else if (agent === "tax_monitor") {
           await loadAttentionConsole().catch(() => {});
@@ -778,7 +782,6 @@ function renderAgents(items) {
           await loadPeakDiff();
           await loadPriceStatus();
           if (state.selectedSymbol) await loadScrip(state.selectedSymbol);
-          await loadLlmConfig();
           await loadSoftwarePerfLogs();
         } else if (agent === "tax_monitor") {
           await loadAttentionConsole();
@@ -866,11 +869,9 @@ function summarizeSoftwareActionDetails(details) {
     const kv = Object.entries(details.suggested_live_config_updates)
       .slice(0, 8)
       .map(([k, v]) => `${k}:${v}`);
-    if (kv.length) bits.push(`llm_updates=${kv.join(", ")}`);
+    if (kv.length) bits.push(`suggested_updates=${kv.join(", ")}`);
   }
   if (typeof details.suggested_code_changes === "number") bits.push(`code_changes=${details.suggested_code_changes}`);
-  if (details.llm_status) bits.push(`llm=${details.llm_status}`);
-  if (details.model) bits.push(`model=${details.model}`);
   if (details.error) bits.push(`error=${details.error}`);
   if (details.path) bits.push(`path=${details.path}`);
   if (details.drift && typeof details.drift === "object" && Object.keys(details.drift).length) {
@@ -884,89 +885,6 @@ function summarizeSoftwareActionDetails(details) {
     }
   }
   return bits.join(" | ");
-}
-
-function renderLlmConfig(payload) {
-  const cfg = payload || {};
-  state.llmConfigRaw = cfg;
-  if ($("llmModelInput")) $("llmModelInput").value = String(cfg.model || "gpt-4.1-mini");
-  if ($("llmApiUrlInput")) $("llmApiUrlInput").value = String(cfg.api_url || "https://api.openai.com/v1/responses");
-  if ($("llmApiKeyInput")) {
-    $("llmApiKeyInput").value = "";
-    $("llmApiKeyInput").placeholder = cfg.api_key_masked ? `Stored: ${cfg.api_key_masked}` : "sk-...";
-  }
-  if ($("llmStatusText")) {
-    const status = String(cfg.last_status || (cfg.configured ? "ready" : "not_configured")).toUpperCase();
-    const err = cfg.last_error ? ` | ${cfg.last_error}` : "";
-    $("llmStatusText").textContent = `LLM: ${status}${err}`;
-  }
-  if ($("llmSummary")) {
-    $("llmSummary").innerHTML = `
-      <div class="metric">Configured: ${cfg.configured ? "Yes" : "No"}</div>
-      <div class="metric">Source: ${escapeHtml(String(cfg.source || "-"))}</div>
-      <div class="metric">Model: ${escapeHtml(String(cfg.model || "-"))}</div>
-      <div class="metric">API URL: ${escapeHtml(String(cfg.api_url || "-"))}</div>
-      <div class="metric">Stored Key: ${escapeHtml(String(cfg.api_key_masked || "-"))}</div>
-      <div class="metric">Last Status: ${escapeHtml(String(cfg.last_status || "-"))}</div>
-      <div class="metric">Last Checked: ${escapeHtml(String(cfg.last_checked_at || "-"))}</div>
-      <div class="metric" style="grid-column: 1 / -1;">Last Error: ${escapeHtml(String(cfg.last_error || "-"))}</div>
-    `;
-  }
-}
-
-async function loadLlmConfig(options = {}) {
-  const throwOnError = !!options.throwOnError;
-  try {
-    const res = await api("/api/v1/llm/config");
-    renderLlmConfig(res || {});
-  } catch (e) {
-    const meta = normalizeUiError(e, "LLM_CONFIG_LOAD_FAILED");
-    if ($("llmStatusText")) $("llmStatusText").textContent = `LLM: ERROR | ${meta.reason}`;
-    if ($("llmSummary")) $("llmSummary").innerHTML = `<div class="metric neg">Failed to load LLM config: ${escapeHtml(meta.reason)}</div>`;
-    if (throwOnError) throw e;
-  }
-}
-
-async function saveLlmConfig() {
-  const payload = {
-    model: $("llmModelInput")?.value || "gpt-4.1-mini",
-    api_url: $("llmApiUrlInput")?.value || "https://api.openai.com/v1/responses",
-  };
-  const apiKey = String($("llmApiKeyInput")?.value || "").trim();
-  if (apiKey) payload.api_key = apiKey;
-  const res = await api("/api/v1/llm/config", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-  renderLlmConfig((res && res.config) || {});
-}
-
-async function testLlmConfig() {
-  const btn = $("testLlmConfigBtn");
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "Testing...";
-  }
-  if ($("llmStatusText")) $("llmStatusText").textContent = `LLM: TESTING | ${new Date().toLocaleString()}`;
-  try {
-    const res = await api("/api/v1/llm/test", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    renderLlmConfig(res?.config || state.llmConfigRaw || {});
-    if ($("llmStatusText")) $("llmStatusText").textContent = `LLM: OK | ${String(res.message || "").trim() || "reachable"}`;
-  } catch (e) {
-    const meta = normalizeUiError(e, "LLM_TEST_FAILED");
-    const cfg = e?.payload?.config || state.llmConfigRaw || {};
-    renderLlmConfig(cfg);
-    if ($("llmStatusText")) $("llmStatusText").textContent = `LLM: ERROR | ${meta.reason}`;
-    throw e;
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "Test LLM";
-    }
-  }
 }
 
 function renderSoftwarePerfLogs(payload) {
@@ -989,17 +907,13 @@ function renderSoftwarePerfLogs(payload) {
     <div class="metric">Last Improvement Draft: ${cfg.last_improvement_at || "-"}</div>
     <div class="metric">Last Cleanup: ${cfg.last_cleanup_at || "-"}</div>
     <div class="metric">Retention: ${Number(cfg.retention_days || 0)} day(s)</div>
-    <div class="metric">LLM Improvement: ${cfg.auto_tune ? "Enabled" : "Disabled"}</div>
+    <div class="metric">Local Improvement: ${cfg.auto_tune ? "Enabled" : "Disabled"}</div>
     <div class="metric">Write Changes: ${cfg.write_changes ? "Yes" : "No"}</div>
-    <div class="metric">LLM Configured: ${cfg.llm_configured ? "Yes" : "No"}</div>
-    <div class="metric">LLM Model: ${escapeHtml(String(cfg.llm_model || "-"))}</div>
-    <div class="metric">LLM Status: ${escapeHtml(String(cfg.llm_status || "-"))}</div>
     <div class="metric">Snapshots: ${snapshots.length}</div>
     <div class="metric">Open Issues: ${openCount}</div>
     <div class="metric">Resolved Issues: ${resolvedCount}</div>
     <div class="metric">Latest Issue Count: ${Number(latest?.issue_count || 0)}</div>
     <div class="metric">Latest Success Rate: ${(Number(latest?.quote_success_rate || 0) * 100).toFixed(1)}%</div>
-    <div class="metric" style="grid-column: 1 / -1;">LLM Error: ${escapeHtml(String(cfg.llm_last_error || "-"))}</div>
   `;
 
   $("softwarePerfOpenIssuesTable").querySelector("tbody").innerHTML = issueRows.length
@@ -1499,13 +1413,8 @@ function renderKpis(summary) {
     ["Today's Change %", pct(summary.today_change_pct), clsBySign(summary.today_change_pct)],
     ["Realized P/L", money(summary.realized_pnl), clsBySign(summary.realized_pnl)],
     ["Unrealized P/L", money(summary.unrealized_pnl), clsBySign(summary.unrealized_pnl)],
-    ["Total P/L (Pre-Tax)", money(summary.total_pnl), clsBySign(summary.total_pnl)],
+    ["Total P/L", money(summary.total_pnl), clsBySign(summary.total_pnl)],
     ["Total Return (Hand %)", pct(summary.total_return_pct), clsBySign(summary.total_return_pct)],
-    ["FY Realized Tax", money(summary.fy_realized_tax || 0), "neg"],
-    ["Est. Unrealized Tax", money(summary.estimated_unrealized_tax || 0), "neg"],
-    ["Total Tax Liability", money(summary.estimated_total_tax || 0), "neg"],
-    ["Post-Tax Total P/L", money(summary.post_tax_total_pnl), clsBySign(summary.post_tax_total_pnl)],
-    ["Post-Tax Return (Hand %)", pct(summary.post_tax_return_pct), clsBySign(summary.post_tax_return_pct)],
     ["Total Return (Deployment %)", pct(summary.deployment_return_pct || 0), clsBySign(summary.deployment_return_pct || 0)],
     ["CAGR", pct(summary.cagr_pct || 0), clsBySign(summary.cagr_pct || 0)],
     ["XIRR", pct(summary.xirr_pct || 0), clsBySign(summary.xirr_pct || 0)],
@@ -2657,27 +2566,27 @@ function renderHarvestPlan(payload) {
 }
 
 async function loadHarvestPlan(options = {}) {
-  const runLlm = !!options.runLlm;
+  const runAnalysis = !!options.runAnalysis;
   const throwOnError = !!options.throwOnError;
   const targetLoss = Math.max(0, Number($("harvestTargetLoss")?.value || 0));
   if ($("harvestStatusText")) {
-    $("harvestStatusText").textContent = runLlm
+    $("harvestStatusText").textContent = runAnalysis
       ? `Harvest planner running dynamic analysis: ${new Date().toLocaleString()}`
       : `Harvest planner refreshing: ${new Date().toLocaleString()}`;
   }
   const params = new URLSearchParams();
   params.set("target_loss", String(Number(targetLoss.toFixed(2))));
-  if (runLlm) params.set("run_llm", "1");
+  if (runAnalysis) params.set("run_analysis", "1");
   try {
     const res = await api(`/api/v1/harvest/plan?${params.toString()}`);
     renderHarvestPlan(res || {});
     if ($("harvestStatusText")) {
-      $("harvestStatusText").textContent = runLlm
+      $("harvestStatusText").textContent = runAnalysis
         ? `Harvest dynamic analysis refreshed: ${new Date().toLocaleString()}`
         : `Harvest planner refreshed: ${new Date().toLocaleString()}`;
     }
   } catch (e) {
-    const meta = normalizeUiError(e, runLlm ? "HARVEST_ANALYSIS_FAILED" : "HARVEST_PLAN_FAILED");
+    const meta = normalizeUiError(e, runAnalysis ? "HARVEST_ANALYSIS_FAILED" : "HARVEST_PLAN_FAILED");
     if ($("harvestStatusText")) $("harvestStatusText").textContent = `Harvest planner error: ${meta.reason}`;
     if ($("harvestSummary")) $("harvestSummary").innerHTML = `<div class="metric neg">Harvest planner unavailable: ${escapeHtml(meta.reason)}</div>`;
     if ($("harvestAnalysisText")) $("harvestAnalysisText").textContent = meta.reason;
@@ -2873,7 +2782,7 @@ function renderDailyTargetPlan(payload) {
       <div class="metric">Starting Capital: ${money(summary.seed_capital)}</div>
       <div class="metric pos" title="Compounded capital used for today's pair sizing = Starting Capital + all realized profits">Effective Capital: ${money(effectiveSeed)}</div>
       <div class="metric">Target %: ${pct(summary.target_profit_pct)}</div>
-      <div class="metric ${clsBySign(effectiveTarget)}" title="Today's profit target = Effective Capital × Target %">Today's Target Profit: ${money(effectiveTarget)}</div>
+      <div class="metric ${clsBySign(effectiveTarget)}" title="Today's profit target = Effective Capital Ã— Target %">Today's Target Profit: ${money(effectiveTarget)}</div>
       <div class="metric ${clsBySign(summary.projected_pending_profit)}">Projected Pending Profit: ${money(summary.projected_pending_profit)}</div>
       <div class="metric">Pending: ${Number(summary.pending_pairs || 0)}</div>
       <div class="metric">Sell Done: ${Number(summary.sell_done_pairs || 0)}</div>
@@ -2902,12 +2811,8 @@ function renderDailyTargetPlan(payload) {
       <div class="metric ${clsBySign(perf.realized_profit_value)}">Realized Profit: ${money(perf.realized_profit_value)}</div>
       <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Return %: ${pct(perf.realized_profit_pct)}</div>
       <div class="metric">MTM Capital (incl. open): ${money(perf.current_compounded_capital)}</div>
-      <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L (Pre-Tax): ${money(perf.compounded_return_value)}</div>
-      <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return % (Pre-Tax): ${pct(perf.compounded_return_pct)}</div>
-      <div class="metric neg" title="Estimated STCG at 20% on realized gains">Est. STCG Tax: ${money(perf.realized_stcg_tax_estimate || 0)}</div>
-      <div class="metric ${clsBySign(perf.realized_profit_post_tax)}">Post-Tax Realized Profit: ${money(perf.realized_profit_post_tax || 0)}</div>
-      <div class="metric pos" title="Starting Capital + post-tax realized profits">Post-Tax Compounded Capital: ${money(perf.compounded_capital_post_tax || 0)}</div>
-      <div class="metric ${clsBySign(perf.compounded_return_pct_post_tax)}">Post-Tax Strategy Return %: ${pct(perf.compounded_return_pct_post_tax || 0)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L: ${money(perf.compounded_return_value)}</div>
+      <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return %: ${pct(perf.compounded_return_pct)}</div>
       <div class="metric">Executed Rotations: ${Number(perf.executed_rotation_count || 0)}</div>
       <div class="metric">Open Tracked Positions: ${Number(perf.open_position_count || 0)}</div>
       <div class="metric">Cumulative Sell Value: ${money(perf.cumulative_sell_value)}</div>
@@ -3073,7 +2978,7 @@ async function loadDailyTargetPlan(options = {}) {
       const table = $("dailyTargetTable");
       const focused = table?.contains(document.activeElement);
       if (focused) {
-        // User is actively editing — skip render, just update status
+        // User is actively editing â€” skip render, just update status
       } else {
         // Save filled-in fields keyed by pair ID before re-render
         const saved = {};
@@ -3087,7 +2992,7 @@ async function loadDailyTargetPlan(options = {}) {
           const bd = row.querySelector(".daily-target-buy-date")?.value || "";
           const nt = row.querySelector(".daily-target-note")?.value || "";
           const st = row.querySelector(".daily-target-state-select")?.value || "";
-          if (sp || sd || bp || bd || nt) saved[pid] = { sp, sd, bp, bd, nt, st };
+          if (sp || sd || bp || bd || nt || st) saved[pid] = { sp, sd, bp, bd, nt, st };
         });
         renderDailyTargetPlan(res || {});
         // Restore any values the user had typed
@@ -5184,7 +5089,6 @@ function bindEvents() {
       if (tab === "agents") {
         await loadAgentStatus();
         await loadBacktestHistory();
-        await loadLlmConfig();
         await loadSoftwarePerfLogs();
       }
     });
@@ -5228,9 +5132,9 @@ function bindEvents() {
   registerButton("rebalanceSaveGuardsBtn", saveRebalanceGuards, { actionName: "Save Min/Max Limits", errorCode: "REBALANCE_GUARD_SAVE_FAILED" });
   registerButton("rebalanceHistoryRefreshBtn", () => loadRebalanceClosedHistory({ throwOnError: true }), { actionName: "Refresh Closed History", errorCode: "REBALANCE_CLOSED_HISTORY_FAILED" });
   registerButton("dailyTargetRefreshBtn", () => loadDailyTargetPlan({ throwOnError: true, recalibrate: true }), { actionName: "Refresh Daily Target Ideas", errorCode: "DAILY_TARGET_PLAN_FAILED" });
-  registerButton("dailyTargetResetBtn", resetDailyTargetPlan, { actionName: "Start New Day — Fresh Ideas", errorCode: "DAILY_TARGET_RESET_FAILED" });
+  registerButton("dailyTargetResetBtn", resetDailyTargetPlan, { actionName: "Start New Day â€” Fresh Ideas", errorCode: "DAILY_TARGET_RESET_FAILED" });
   registerButton("harvestRefreshBtn", () => loadHarvestPlan({ throwOnError: true }), { actionName: "Refresh Harvest Plan", errorCode: "HARVEST_PLAN_FAILED" });
-  registerButton("harvestRunAnalysisBtn", () => loadHarvestPlan({ throwOnError: true, runLlm: true }), { actionName: "Run Harvest Dynamic Analysis", errorCode: "HARVEST_ANALYSIS_FAILED" });
+  registerButton("harvestRunAnalysisBtn", () => loadHarvestPlan({ throwOnError: true, runAnalysis: true }), { actionName: "Run Harvest Dynamic Analysis", errorCode: "HARVEST_ANALYSIS_FAILED" });
   registerButton("lossLotsRefreshBtn", () => loadLossLots({ throwOnError: true }), { actionName: "Refresh Loss Lots", errorCode: "LOSS_LOTS_FAILED" });
   registerButton("assistantChatSendBtn", sendAssistantChat, { actionName: "Send Assistant Message", errorCode: "ASSISTANT_SEND_FAILED" });
   registerButton("refreshApprovalsBtn", loadAssistantApprovals, { actionName: "Refresh Approvals", errorCode: "APPROVALS_REFRESH_FAILED" });
@@ -5240,7 +5144,6 @@ function bindEvents() {
     "refreshAgentsBtn",
     async () => {
       await loadAgentStatus();
-      await loadLlmConfig();
       await loadSoftwarePerfLogs();
     },
     { actionName: "Refresh Agent Status", errorCode: "AGENTS_REFRESH_FAILED" }
@@ -5250,8 +5153,6 @@ function bindEvents() {
     refreshSoftwarePerfNow,
     { actionName: "Refresh Performance Logs", errorCode: "PERF_LOG_REFRESH_FAILED" }
   );
-  registerButton("saveLlmConfigBtn", saveLlmConfig, { actionName: "Save LLM Settings", errorCode: "LLM_CONFIG_SAVE_FAILED" });
-  registerButton("testLlmConfigBtn", testLlmConfig, { actionName: "Test LLM Runtime", errorCode: "LLM_TEST_FAILED" });
   registerButton("openAgentBacktestBtn", openAgentBacktestModal, { actionName: "Open Agent Backtest", errorCode: "BACKTEST_MODAL_OPEN_FAILED" });
   registerButton("runAgentBacktestBtn", runAgentBacktest, { actionName: "Run Agent Backtest", errorCode: "BACKTEST_RUN_FAILED" });
   registerButton("agentBacktestCloseBtn", closeAgentBacktestModal, { actionName: "Close Agent Backtest", errorCode: "BACKTEST_MODAL_CLOSE_FAILED" });
