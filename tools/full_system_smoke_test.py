@@ -391,12 +391,16 @@ def run():
         expect("def _daily_target_live_pair_metrics(" in py, "daily target live pair metrics helper missing")
         expect("def _daily_target_build_buy_leg(" in py, "daily target buy-leg builder missing")
         expect("def _daily_target_zerodha_delivery_costs(" in py, "daily target Zerodha delivery cost helper missing")
+        expect("def _daily_target_charge_drag(" in py, "daily target charge-drag helper missing")
+        expect("def _daily_target_economic_trade_size(" in py, "daily target economic trade-size helper missing")
+        expect("def _daily_target_trade_size_summary(" in py, "daily target trade-size summary helper missing")
         expect("def _daily_target_estimate_sell_tax_profile(" in py, "daily target sell tax profile helper missing")
         expect("def _daily_target_required_exit_price_for_net_goal(" in py, "daily target net-goal target exit helper missing")
         expect("def compute_realized_equity_tax_summary(" in py, "daily target FY-aware realized equity tax summary helper missing")
         expect("ltcg_remaining_exemption" in py, "daily target LTCG exemption tracking missing")
         expect("tax_mode" in py and "equity_stcg_tax_pct" in py and "equity_ltcg_tax_pct" in py, "daily target tax summary fields missing")
         expect("Tax Mode:" in js and "Broker Cost Model:" in js, "daily target tax assumptions not surfaced in ui summary")
+        expect("Economical Trade Value:" in js and "Charge Drag @ Seed:" in js and "Size Advice:" in js, "daily target charge-aware sizing not surfaced in ui summary")
         expect("pipeline_buy_switch_after_update" in py, "daily target pipeline switch recalibration missing")
 
     check("daily_target_planner_contract", daily_target_planner_contract)
@@ -632,6 +636,8 @@ def run():
             expect(key in summary, f"daily target summary missing {key}")
         for key in ("tax_mode", "equity_stcg_tax_pct", "equity_ltcg_tax_pct", "zerodha_cost_model", "remaining_ltcg_exemption", "equity_ltcg_exemption_limit"):
             expect(key in summary, f"daily target summary missing {key}")
+        for key in ("effective_trade_capital", "economic_min_trade_value", "charge_drag_pct_at_seed", "charge_drag_pct_at_effective", "trade_size_advice"):
+            expect(key in summary, f"daily target charge-aware sizing summary missing {key}")
         for key in ("starting_capital", "current_compounded_capital", "realized_compounded_capital", "realized_profit_value", "suggested_next_seed_capital"):
             expect(key in perf, f"daily target performance missing {key}")
         pairs = out.get("pairs") or []

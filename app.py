@@ -10794,6 +10794,8 @@ DAILY_TARGET_ZERODHA_STT_DELIVERY_RATE = 0.001
 DAILY_TARGET_ZERODHA_STAMP_BUY_RATE = 0.00015
 DAILY_TARGET_ZERODHA_GST_RATE = 0.18
 DAILY_TARGET_ZERODHA_DP_CHARGE_SELL_INCL_GST = 15.34
+DAILY_TARGET_MAX_CHARGE_DRAG_PCT_OF_TARGET = 45.0
+DAILY_TARGET_MAX_ECONOMIC_CAPITAL_MULTIPLE = 5.0
 
 
 def _daily_target_stt_round(value):
@@ -10836,6 +10838,94 @@ def _daily_target_zerodha_delivery_costs(order_value, exchange="NSE", side="BUY"
         "stamp": round(stamp, 2),
         "dp_charges": round(dp, 2),
         "total": total,
+    }
+
+
+def _daily_target_charge_drag(order_value, target_profit_pct=1.0, tax_cfg=None, exchange="NSE"):
+    value = max(0.0, round(parse_float(order_value, 0.0), 2))
+    target_pct = max(0.1, parse_float(target_profit_pct, 1.0))
+    if value <= 0:
+        return {"total_charges": 0.0, "target_profit": 0.0, "charge_drag_pct": 0.0}
+    sell_now = _daily_target_zerodha_delivery_costs(
+        value, exchange=exchange, side="SELL", include_dp_on_sell=True, tax_cfg=tax_cfg
+    )
+    buy_entry = _daily_target_zerodha_delivery_costs(
+        value, exchange=exchange, side="BUY", include_dp_on_sell=False, tax_cfg=tax_cfg
+    )
+    rough_exit_value = value * (1.0 + (target_pct / 100.0))
+    buy_exit = _daily_target_zerodha_delivery_costs(
+        rough_exit_value, exchange=exchange, side="SELL", include_dp_on_sell=True, tax_cfg=tax_cfg
+    )
+    total = round(
+        parse_float(sell_now.get("total"), 0.0)
+        + parse_float(buy_entry.get("total"), 0.0)
+        + parse_float(buy_exit.get("total"), 0.0),
+        2,
+    )
+    target_profit = round(value * target_pct / 100.0, 2)
+    return {
+        "total_charges": total,
+        "target_profit": target_profit,
+        "charge_drag_pct": round((total / target_profit) * 100.0, 2) if target_profit > 0 else 0.0,
+    }
+
+
+def _daily_target_economic_trade_size(seed_capital, target_profit_pct=1.0, tax_cfg=None):
+    seed = round(max(1000.0, parse_float(seed_capital, 10000.0)), 2)
+    target_pct = max(0.1, parse_float(target_profit_pct, 1.0))
+    max_drag = DAILY_TARGET_MAX_CHARGE_DRAG_PCT_OF_TARGET
+    at_seed = _daily_target_charge_drag(seed, target_pct, tax_cfg=tax_cfg)
+    recommended = seed
+    best = dict(at_seed)
+    if parse_float(at_seed.get("charge_drag_pct"), 0.0) > max_drag:
+        ceiling = max(seed, seed * DAILY_TARGET_MAX_ECONOMIC_CAPITAL_MULTIPLE)
+        step = max(500.0, round(seed * 0.05, 2))
+        probe = seed
+        while probe < ceiling:
+            probe = min(ceiling, probe + step)
+            candidate = _daily_target_charge_drag(probe, target_pct, tax_cfg=tax_cfg)
+            best = candidate
+            if parse_float(candidate.get("charge_drag_pct"), 0.0) <= max_drag:
+                recommended = round(probe, 2)
+                break
+        else:
+            recommended = round(ceiling, 2)
+            best = _daily_target_charge_drag(recommended, target_pct, tax_cfg=tax_cfg)
+    return {
+        "requested_trade_value": round(seed, 2),
+        "recommended_trade_value": round(recommended, 2),
+        "size_up_recommended": recommended > seed + 0.01,
+        "max_charge_drag_pct": max_drag,
+        "seed_charge_drag_pct": round(parse_float(at_seed.get("charge_drag_pct"), 0.0), 2),
+        "recommended_charge_drag_pct": round(parse_float(best.get("charge_drag_pct"), 0.0), 2),
+        "seed_estimated_charges": round(parse_float(at_seed.get("total_charges"), 0.0), 2),
+        "recommended_estimated_charges": round(parse_float(best.get("total_charges"), 0.0), 2),
+    }
+
+
+def _daily_target_trade_size_summary(seed_capital, target_profit_pct=1.0, tax_cfg=None):
+    seed = round(max(1000.0, parse_float(seed_capital, 10000.0)), 2)
+    target_pct = round(max(0.1, parse_float(target_profit_pct, 1.0)), 2)
+    economics = _daily_target_economic_trade_size(seed, target_pct, tax_cfg=tax_cfg)
+    trade_capital = round(max(seed, parse_float(economics.get("recommended_trade_value"), seed)), 2)
+    seed_drag = round(parse_float(economics.get("seed_charge_drag_pct"), 0.0), 2)
+    effective_drag = round(parse_float(economics.get("recommended_charge_drag_pct"), seed_drag), 2)
+    size_advice = (
+        f"small-lot charges are high at {seed_drag}% of target; prefer around {money(trade_capital)} where possible"
+        if economics.get("size_up_recommended")
+        else f"trade size economical; charges about {seed_drag}% of target"
+    )
+    return {
+        "effective_trade_capital": trade_capital,
+        "economic_min_trade_value": round(parse_float(economics.get("recommended_trade_value"), seed), 2),
+        "trade_size_advice": size_advice,
+        "charge_drag_pct_at_seed": seed_drag,
+        "charge_drag_pct_at_effective": effective_drag,
+        "max_charge_drag_pct": DAILY_TARGET_MAX_CHARGE_DRAG_PCT_OF_TARGET,
+        "estimated_charges_at_seed": round(parse_float(economics.get("seed_estimated_charges"), 0.0), 2),
+        "estimated_charges_at_effective": round(parse_float(economics.get("recommended_estimated_charges"), 0.0), 2),
+        "effective_target_profit_value": round((trade_capital * target_pct) / 100.0, 2),
+        "target_profit_value": round((trade_capital * target_pct) / 100.0, 2),
     }
 
 
@@ -11436,6 +11526,10 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
     limit = max(1, min(10, int(parse_float(top_n, 5))))
     split_map = load_split_map(conn)
     tax_cfg = get_tax_profile_config(conn)
+    economics = _daily_target_economic_trade_size(seed, target_pct, tax_cfg=tax_cfg)
+    size_summary = _daily_target_trade_size_summary(seed, target_pct, tax_cfg=tax_cfg)
+    trade_capital = round(parse_float(size_summary.get("effective_trade_capital"), seed), 2)
+    size_advice = str(size_summary.get("trade_size_advice") or "")
     realized_tax_summary = compute_realized_equity_tax_summary(conn)
     # FY gain pools: precomputed baselines; depleted incrementally in the pair loop
     # so each successive pair sees the remaining relief capacity accurately.
@@ -11497,7 +11591,7 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
         min_value = parse_float(guards.get("min_value"), 0.0)
         max_value = guards.get("max_value")
         max_sell_value = max(0.0, market_value - max(0.0, min_value))
-        buy_capacity = (max(0.0, parse_float(max_value, 0.0) - market_value) if max_value not in (None, "") else seed * 3.0)
+        buy_capacity = (max(0.0, parse_float(max_value, 0.0) - market_value) if max_value not in (None, "") else trade_capital * 3.0)
         tax_rows = open_lot_tax_bucket_rows(conn, symbol, ltp=ltp, split_map=split_map)
         stcg_loss_available = round(sum(max(0.0, -parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "STCG" and parse_float(x.get("unrealized_pnl"), 0.0) < 0), 2)
         ltcg_loss_available = round(sum(max(0.0, -parse_float(x.get("unrealized_pnl"), 0.0)) for x in tax_rows if str(x.get("tax_bucket") or "").upper() == "LTCG" and parse_float(x.get("unrealized_pnl"), 0.0) < 0), 2)
@@ -11516,7 +11610,7 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
             - ltcg_gain_available * _daily_target_equity_tax_rate("LTCG", tax_cfg),
             2,
         )
-        tax_alpha_score = round((tax_alpha_value / max(seed, 1.0)) * 500.0, 4)
+        tax_alpha_score = round((tax_alpha_value / max(trade_capital, 1.0)) * 500.0, 4)
         sell_score = (
             max(0.0, -expected_move_score)
             + max(0.0, -momentum) * 0.4
@@ -11593,7 +11687,7 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
             if buy["symbol"] == sell["symbol"] or buy["symbol"] in used_buy or buy["symbol"] in used_symbols or buy["symbol"] in used_sell:
                 continue
             allocation = min(
-                seed,
+                trade_capital,
                 parse_float(sell.get("max_sell_value"), 0.0),
                 parse_float(buy.get("buy_capacity"), 0.0),
             )
@@ -11603,6 +11697,8 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
             if sell_qty <= 0:
                 continue
             sell_value = round(sell_qty * sell["ltp"], 2)
+            pair_economics = _daily_target_charge_drag(sell_value, target_pct, tax_cfg=tax_cfg, exchange=sell.get("exchange"))
+            charge_drag_pct = round(parse_float(pair_economics.get("charge_drag_pct"), 0.0), 2)
             sell_costs = _daily_target_zerodha_delivery_costs(
                 sell_value,
                 exchange=sell.get("exchange"),
@@ -11667,11 +11763,13 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
                     - parse_float(sell_costs.get("total"), 0.0)
                     - parse_float(buy_entry_costs.get("total"), 0.0)
                 )
-                / max(seed, 1.0)
+                / max(trade_capital, 1.0)
                 * 500.0,
                 4,
             )
+            charge_drag_penalty = max(0.0, charge_drag_pct - DAILY_TARGET_MAX_CHARGE_DRAG_PCT_OF_TARGET) / 4.0
             rotation_score = round(parse_float(sell.get("sell_score"), 0.0) + parse_float(buy.get("buy_score"), 0.0) + tax_alpha_score, 4)
+            rotation_score = round(rotation_score - charge_drag_penalty, 4)
             sell_tax_bits = []
             if parse_float(sell_tax.get("tax_relief"), 0.0) > 0:
                 sell_tax_bits.append(f"tax relief {money(sell_tax.get('tax_relief'))}")
@@ -11682,6 +11780,9 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
             if parse_float(sell_tax.get("ltcg_remaining_exemption_before"), 0.0) > 0:
                 sell_tax_bits.append(f"LTCG exemption left {money(max(0.0, parse_float(sell_tax.get('ltcg_remaining_exemption_before'), 0.0) - parse_float(sell_tax.get('ltcg_exemption_used'), 0.0)))}")
             sell_tax_bits.append(f"cost {money(sell_costs.get('total'))}")
+            sell_tax_bits.append(f"trade size {money(sell_value)}; charge drag {charge_drag_pct}%")
+            if economics.get("size_up_recommended") and sell_value >= seed:
+                sell_tax_bits.append("sized up to dilute fixed charges")
             buy_tax_bits = [
                 f"entry cost {money(buy_entry_costs.get('total'))}",
                 f"future STCG {money(target_exit_stats.get('future_tax_total'))}",
@@ -11720,6 +11821,10 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
                 "net_target_profit_value": expected_profit_value,
                 "required_buy_leg_net_profit": required_buy_leg_net,
                 "tax_alpha_score": tax_alpha_score,
+                "trade_economics": "sized_up" if economics.get("size_up_recommended") and sell_value > seed else "standard",
+                "charge_drag_pct": charge_drag_pct,
+                "estimated_roundtrip_charges": round(parse_float(pair_economics.get("total_charges"), 0.0), 2),
+                "size_advice": size_advice,
                 "fy_label": str(realized_tax_summary.get("fy_label") or ""),
                 "ltcg_remaining_exemption_before": round(parse_float(sell_tax.get("ltcg_remaining_exemption_before"), 0.0), 2),
                 "ltcg_exemption_used": round(parse_float(sell_tax.get("ltcg_exemption_used"), 0.0), 2),
@@ -11760,8 +11865,8 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
     return {
         "summary": {
             "seed_capital": seed,
+            **size_summary,
             "target_profit_pct": target_pct,
-            "target_profit_value": round((seed * target_pct) / 100.0, 2),
             "top_n": limit,
             "sell_candidate_count": len(sell_candidates),
             "buy_candidate_count": len(buy_candidates),
@@ -11962,12 +12067,15 @@ def _daily_target_plan_payload(conn, plan_row):
         perf = compute_daily_target_performance(conn)
         tax_cfg = get_tax_profile_config(conn)
         realized_tax = compute_realized_equity_tax_summary(conn)
+        effective_seed_capital = round(parse_float(perf.get("suggested_next_seed_capital"), 10000.0), 2)
+        size_summary = _daily_target_trade_size_summary(effective_seed_capital, 1.0, tax_cfg=tax_cfg)
         return {
             "plan": None,
             "summary": {
                 "seed_capital": 10000.0,
+                "effective_seed_capital": effective_seed_capital,
+                **size_summary,
                 "target_profit_pct": 1.0,
-                "target_profit_value": 100.0,
                 "top_n": 5,
                 "pending_pairs": 0,
                 "executed_pairs": 0,
@@ -11976,7 +12084,7 @@ def _daily_target_plan_payload(conn, plan_row):
                 "skipped_pairs": 0,
                 "replaced_pairs": 0,
                 "projected_pending_profit": 0.0,
-                "suggested_next_seed_capital": round(parse_float(perf.get("suggested_next_seed_capital"), 10000.0), 2),
+                "suggested_next_seed_capital": effective_seed_capital,
                 "tax_mode": "equity_special_rates",
                 "investor_tax_bracket_pct": DAILY_TARGET_USER_TAX_BRACKET_PCT,
                 "equity_stcg_tax_pct": round(parse_float(tax_cfg.get("stcg_rate_pct"), DAILY_TARGET_EQUITY_STCG_TAX_PCT), 4),
@@ -12079,6 +12187,7 @@ def _daily_target_plan_payload(conn, plan_row):
         "zerodha_cost_model": "equity_delivery",
     }
     perf = compute_daily_target_performance(conn)
+    tax_cfg = get_tax_profile_config(conn)
     realized_tax = compute_realized_equity_tax_summary(conn)
     summary["fy_label"] = str(realized_tax.get("fy_label") or "")
     summary["fy_start_date"] = str(realized_tax.get("fy_start_date") or "")
@@ -12088,7 +12197,12 @@ def _daily_target_plan_payload(conn, plan_row):
     effective_seed_capital = round(parse_float(perf.get("suggested_next_seed_capital"), summary["seed_capital"]), 2)
     summary["suggested_next_seed_capital"] = effective_seed_capital
     summary["effective_seed_capital"] = effective_seed_capital
-    summary["effective_target_profit_value"] = round(effective_seed_capital * parse_float(summary.get("target_profit_pct"), 1.0) / 100.0, 2)
+    size_summary = _daily_target_trade_size_summary(
+        effective_seed_capital,
+        parse_float(summary.get("target_profit_pct"), 1.0),
+        tax_cfg=tax_cfg,
+    )
+    summary.update(size_summary)
     return {
         "plan": {
             "id": plan_id,
@@ -12404,9 +12518,9 @@ def _recalibrate_daily_target_plan(conn, plan_row, seed_capital=None, target_pro
     summary["pipeline_switches"] = recalibration_switches
     summary["active_live_price_recalibrated_at"] = now_ts
     summary["generated_pairs_count"] = len(filtered_pairs)
-    # seed_capital is the immutable baseline from plan creation — never overwritten.
-    # target_profit_value is updated to reflect effective_seed * target_pct so the
-    # UI shows today's compounded profit target (effective_seed is already in summary).
+    # seed_capital is the immutable baseline from plan creation and is never overwritten.
+    # target_profit_value follows the charge-aware effective trade capital, so the
+    # UI shows the profit needed after compounding and lot-size economics.
     conn.execute(
         """
         UPDATE daily_target_plans
@@ -12415,7 +12529,7 @@ def _recalibrate_daily_target_plan(conn, plan_row, seed_capital=None, target_pro
         """,
         (
             round(parse_float(summary.get("target_profit_pct"), 0.0), 2),
-            round(parse_float(effective_seed * target_pct_effective / 100.0, 0.0), 2),
+            round(parse_float(summary.get("target_profit_value"), effective_seed * target_pct_effective / 100.0), 2),
             int(parse_float(summary.get("top_n"), 0.0)),
             now_ts,
             now_ts,

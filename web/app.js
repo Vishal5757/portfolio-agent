@@ -2777,13 +2777,20 @@ function renderDailyTargetPlan(payload) {
     const taxMode = String(summary.tax_mode || "-").replaceAll("_", " ");
     const zerodhaCostModel = String(summary.zerodha_cost_model || "-").replaceAll("_", " ");
     const effectiveSeed = summary.effective_seed_capital || summary.suggested_next_seed_capital || summary.seed_capital;
+    const effectiveTradeCapital = summary.effective_trade_capital || summary.economic_min_trade_value || effectiveSeed;
     const effectiveTarget = summary.effective_target_profit_value || summary.target_profit_value;
+    const tradeSizeAdvice = String(summary.trade_size_advice || "-");
     $("dailyTargetSummary").innerHTML = `
       <div class="metric">Plan: ${plan.id ? `#${Number(plan.id)}` : "-"}</div>
       <div class="metric">Starting Capital: ${money(summary.seed_capital)}</div>
       <div class="metric pos" title="Compounded capital used for today's pair sizing = Starting Capital + all realized profits">Effective Capital: ${money(effectiveSeed)}</div>
+      <div class="metric ${Number(effectiveTradeCapital || 0) > Number(effectiveSeed || 0) ? "warn" : "pos"}" title="Charge-aware trade value. If fixed charges eat too much of the target, the planner recommends a larger lot.">Economical Trade Value: ${money(effectiveTradeCapital)}</div>
       <div class="metric">Target %: ${pct(summary.target_profit_pct)}</div>
-      <div class="metric ${clsBySign(effectiveTarget)}" title="Today's profit target = Effective Capital Ã— Target %">Today's Target Profit: ${money(effectiveTarget)}</div>
+      <div class="metric ${clsBySign(effectiveTarget)}" title="Today's profit target = charge-aware trade value x Target %">Today's Target Profit: ${money(effectiveTarget)}</div>
+      <div class="metric ${Number(summary.charge_drag_pct_at_seed || 0) > Number(summary.max_charge_drag_pct || 45) ? "warn" : "pos"}" title="Estimated sell-now + buy-entry + future-sell charges as % of target profit at the starting seed.">Charge Drag @ Seed: ${pct(summary.charge_drag_pct_at_seed)}</div>
+      <div class="metric ${Number(summary.charge_drag_pct_at_effective || 0) > Number(summary.max_charge_drag_pct || 45) ? "warn" : "pos"}" title="Estimated charges as % of target profit at the recommended trade size.">Charge Drag @ Trade: ${pct(summary.charge_drag_pct_at_effective)}</div>
+      <div class="metric">Est. Charges @ Trade: ${money(summary.estimated_charges_at_effective)}</div>
+      <div class="metric" title="${escapeHtml(tradeSizeAdvice)}">Size Advice: ${escapeHtml(tradeSizeAdvice)}</div>
       <div class="metric ${clsBySign(summary.projected_pending_profit)}">Projected Pending Profit: ${money(summary.projected_pending_profit)}</div>
       <div class="metric">Pending: ${Number(summary.pending_pairs || 0)}</div>
       <div class="metric">Sell Done: ${Number(summary.sell_done_pairs || 0)}</div>
