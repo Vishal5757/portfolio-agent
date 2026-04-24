@@ -1883,7 +1883,37 @@ def _hosted_llm_chat_once(provider, api_key, model, messages, timeout_sec=HOSTED
         "max_tokens": 700,
     }
     opener = urllib.request.build_opener()
-    out = _http_json_post(opener, spec["base_url"], headers, payload, timeout=timeout_sec)
+    try:
+        out = _http_json_post(opener, spec["base_url"], headers, payload, timeout=timeout_sec)
+    except urllib.error.HTTPError as ex:
+        body = ""
+        try:
+            body = ex.read().decode("utf-8", errors="ignore")
+        except Exception:
+            body = ""
+        retry_after = ""
+        try:
+            retry_after = str(ex.headers.get("Retry-After") or "").strip()
+        except Exception:
+            retry_after = ""
+        if int(getattr(ex, "code", 0) or 0) == 429:
+            msg = f"rate_limited_429"
+            if retry_after:
+                msg += f"; retry_after={retry_after}s"
+            if provider == "groq":
+                msg += "; Groq free tier limit hit. Wait for quota reset or move Groq later in provider order."
+            raise RuntimeError(msg)
+        if int(getattr(ex, "code", 0) or 0) in (401, 403):
+            msg = f"auth_or_access_{int(ex.code)}"
+            if provider == "huggingface":
+                msg += "; Hugging Face token lacks Inference Provider access or this model/provider is not available for the token."
+            elif provider == "openrouter":
+                msg += "; OpenRouter key is invalid or has no access to the selected model."
+            elif provider == "groq":
+                msg += "; Groq key is invalid or the project lacks model access."
+            raise RuntimeError(msg)
+        detail = body[:240].strip()
+        raise RuntimeError(f"http_{int(getattr(ex, 'code', 0) or 0)}{': ' + detail if detail else ''}")
     choices = out.get("choices") if isinstance(out, dict) else None
     if not choices:
         raise RuntimeError("no_choices_returned")

@@ -3714,6 +3714,24 @@ function hostedProviderByName(config, name) {
   return providers.find((p) => String(p.provider || "") === name) || {};
 }
 
+function hostedLlmErrorHint(provider, err) {
+  const p = String(provider || "").toLowerCase();
+  const e = String(err || "");
+  if (!e) return "";
+  if (e.includes("rate_limited_429") || e.includes("429")) {
+    return p === "groq"
+      ? "Hint: Groq free-tier quota is exhausted. Wait for reset, lower LLM usage, or move Groq later in provider order."
+      : "Hint: provider rate limit hit. Wait for reset or move this provider later.";
+  }
+  if (e.includes("auth_or_access_403") || e.includes("403")) {
+    return p === "huggingface"
+      ? "Hint: Hugging Face token/model access is blocked. Use a token with Inference Providers access or choose a served model/provider."
+      : "Hint: access forbidden. Check API key and selected model.";
+  }
+  if (e.includes("auth_or_access_401") || e.includes("401")) return "Hint: API key/token was rejected.";
+  return "";
+}
+
 function renderHostedLlmConfig(config) {
   const cfg = config || {};
   const openrouter = hostedProviderByName(cfg, "openrouter");
@@ -3742,7 +3760,8 @@ function renderHostedLlmConfig(config) {
             <div class="metric ${p.configured ? "pos" : "warn"}">
               ${escapeHtml(String(p.label || p.provider || ""))}: ${p.configured ? "configured" : "missing key"}<br>
               Model: ${escapeHtml(String(p.model || "-"))}<br>
-              Last: ${escapeHtml(String(p.last_status || "-"))} ${p.last_error ? `| ${escapeHtml(String(p.last_error))}` : ""}
+              Last: ${escapeHtml(String(p.last_status || "-"))} ${p.last_error ? `| ${escapeHtml(String(p.last_error))}` : ""}<br>
+              ${p.last_error ? escapeHtml(hostedLlmErrorHint(p.provider, p.last_error)) : ""}
             </div>`
         )
         .join("")}
@@ -3784,7 +3803,7 @@ function renderHostedLlmMetrics(payload) {
                 <td>${Number(r.latency_ms || 0).toFixed(0)} ms</td>
                 <td>${Number(r.prompt_chars || 0)}</td>
                 <td>${Number(r.response_chars || 0)}</td>
-                <td class="reason-cell">${escapeHtml(String(r.error || ""))}</td>
+                <td class="reason-cell">${escapeHtml(String(r.error || ""))}${r.error ? `<br>${escapeHtml(hostedLlmErrorHint(r.provider, r.error))}` : ""}</td>
               </tr>`
           )
           .join("")
