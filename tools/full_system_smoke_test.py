@@ -435,8 +435,10 @@ def run():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        schema = (root / "schema.sql").read_text(encoding="utf-8")
         expect("CREATE TABLE IF NOT EXISTS strategy_audit_runs" in py, "strategy audit run table missing")
         expect("CREATE TABLE IF NOT EXISTS strategy_audit_findings" in py, "strategy audit findings table missing")
+        expect("CREATE TABLE IF NOT EXISTS hosted_llm_runs" in py and "CREATE TABLE IF NOT EXISTS hosted_llm_runs" in schema, "hosted llm metrics table missing")
         expect("def run_strategy_audit(conn, refresh_strategy=False" in py, "strategy audit runner missing")
         expect("def list_strategy_audit_runs(conn, limit=25):" in py, "strategy audit history helper missing")
         expect("/api/v1/strategy/audits" in py, "strategy audit list endpoint missing")
@@ -496,13 +498,17 @@ def run():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        schema = (root / "schema.sql").read_text(encoding="utf-8")
         perf = (root / "portfolio_agent" / "software_performance.py").read_text(encoding="utf-8")
         expect("/api/v1/hosted-llm/config" in py, "hosted free-tier llm config endpoint missing")
         expect("/api/v1/hosted-llm/test" in py, "hosted free-tier llm test endpoint missing")
+        expect("/api/v1/hosted-llm/metrics" in py, "hosted llm metrics endpoint missing")
         expect("HOSTED_LLM_PROVIDERS" in py and "openrouter" in py and "groq" in py and "huggingface" in py, "hosted llm provider mix missing")
         expect("function loadHostedLlmConfig" in js and "function saveHostedLlmConfig" in js, "hosted llm ui config functions missing")
+        expect("function renderHostedLlmMetrics" in js and "function loadHostedLlmMetrics" in js, "hosted llm metrics ui missing")
         expect("hostedLlmSaveBtn" in js and "hostedLlmTestBtn" in js, "hosted llm buttons not wired")
         expect('id="strategyAuditUseHostedLlm"' in html, "strategy audit hosted llm toggle missing")
+        expect('id="hostedLlmMetricsTable"' in html and 'id="hostedLlmMetricsSummary"' in html, "hosted llm operational dashboard missing")
         expect('id="hostedLlmOpenrouterKey"' in html and 'id="hostedLlmGroqKey"' in html and 'id="hostedLlmHuggingfaceKey"' in html, "hosted llm provider key inputs missing")
         expect("_software_perf_generate_local_proposal" in perf, "software perf local proposal generator missing")
 
@@ -922,6 +928,11 @@ def run():
         expect(saved.get("enabled") is False, "hosted llm disabled config did not persist")
         _, test = req("POST", "/api/v1/hosted-llm/test", {}, expected=200)
         expect(test.get("ok") is False and test.get("status") == "disabled", "disabled hosted llm test should fail gracefully")
+        _, metrics = req("GET", "/api/v1/hosted-llm/metrics?limit=20", expected=200)
+        expect("summary" in metrics and "providers" in metrics and "items" in metrics, "hosted llm metrics payload incomplete")
+        summary = metrics.get("summary") or {}
+        for key in ("total_attempts", "ok_attempts", "error_attempts", "skipped_attempts", "success_rate_pct", "avg_ok_latency_ms"):
+            expect(key in summary, f"hosted llm metrics summary missing {key}")
 
     check("hosted_free_llm", hosted_free_llm_runtime)
 

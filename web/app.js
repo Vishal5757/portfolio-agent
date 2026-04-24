@@ -3734,11 +3734,68 @@ function renderHostedLlmConfig(config) {
   }
 }
 
+function renderHostedLlmMetrics(payload) {
+  const p = payload || {};
+  const summary = p.summary || {};
+  const providers = Array.isArray(p.providers) ? p.providers : [];
+  const items = Array.isArray(p.items) ? p.items : [];
+  if ($("hostedLlmMetricsSummary")) {
+    $("hostedLlmMetricsSummary").innerHTML = `
+      <div class="metric">Attempts: ${Number(summary.total_attempts || 0)}</div>
+      <div class="metric pos">OK: ${Number(summary.ok_attempts || 0)}</div>
+      <div class="metric ${Number(summary.error_attempts || 0) > 0 ? "neg" : ""}">Errors: ${Number(summary.error_attempts || 0)}</div>
+      <div class="metric">Skipped: ${Number(summary.skipped_attempts || 0)}</div>
+      <div class="metric ${Number(summary.success_rate_pct || 0) >= 60 ? "pos" : "warn"}">Success Rate: ${pct(summary.success_rate_pct)}</div>
+      <div class="metric">Avg OK Latency: ${Number(summary.avg_ok_latency_ms || 0).toFixed(0)} ms</div>
+      <div class="metric">Last Run: ${escapeHtml(String(summary.last_run_at || "-"))}</div>
+      <div class="metric" style="grid-column: 1 / -1;">Provider Mix: ${providers
+        .map((x) => `${x.provider}: ${Number(x.ok_count || 0)}/${Number(x.attempts || 0)} ok, ${Number(x.avg_ok_latency_ms || 0).toFixed(0)}ms`)
+        .join(" | ") || "-"}</div>
+    `;
+  }
+  const body = $("hostedLlmMetricsTable")?.querySelector("tbody");
+  if (body) {
+    body.innerHTML = items.length
+      ? items
+          .map(
+            (r) => `
+              <tr>
+                <td>${escapeHtml(String(r.created_at || "-"))}</td>
+                <td>${escapeHtml(String(r.purpose || "-"))}</td>
+                <td>${escapeHtml(String(r.provider || "-"))}</td>
+                <td>${escapeHtml(String(r.model || "-"))}</td>
+                <td class="${String(r.status || "") === "ok" ? "pos" : String(r.status || "") === "error" ? "neg" : "warn"}">${escapeHtml(String(r.status || "-").toUpperCase())}</td>
+                <td>${Number(r.latency_ms || 0).toFixed(0)} ms</td>
+                <td>${Number(r.prompt_chars || 0)}</td>
+                <td>${Number(r.response_chars || 0)}</td>
+                <td class="reason-cell">${escapeHtml(String(r.error || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="9">No hosted LLM calls recorded yet.</td></tr>';
+  }
+}
+
+async function loadHostedLlmMetrics(options = {}) {
+  const throwOnError = !!options.throwOnError;
+  try {
+    const metrics = await api("/api/v1/hosted-llm/metrics?limit=60");
+    renderHostedLlmMetrics(metrics || {});
+  } catch (e) {
+    const meta = normalizeUiError(e, "HOSTED_LLM_METRICS_LOAD_FAILED");
+    if ($("hostedLlmMetricsSummary")) $("hostedLlmMetricsSummary").innerHTML = `<div class="metric neg">Hosted LLM metrics unavailable: ${escapeHtml(meta.reason)}</div>`;
+    const body = $("hostedLlmMetricsTable")?.querySelector("tbody");
+    if (body) body.innerHTML = '<tr><td colspan="9">Failed to load hosted LLM metrics.</td></tr>';
+    if (throwOnError) throw e;
+  }
+}
+
 async function loadHostedLlmConfig(options = {}) {
   const throwOnError = !!options.throwOnError;
   try {
     const cfg = await api("/api/v1/hosted-llm/config");
     renderHostedLlmConfig(cfg || {});
+    await loadHostedLlmMetrics();
     if ($("hostedLlmStatusText")) $("hostedLlmStatusText").textContent = `Hosted LLM: ${cfg?.enabled ? "enabled" : "disabled"}`;
   } catch (e) {
     const meta = normalizeUiError(e, "HOSTED_LLM_CONFIG_LOAD_FAILED");
@@ -3782,6 +3839,7 @@ async function testHostedLlmConfig() {
   if ($("hostedLlmStatusText")) $("hostedLlmStatusText").textContent = "Hosted LLM test running...";
   const res = await api("/api/v1/hosted-llm/test", { method: "POST", body: JSON.stringify({}) });
   renderHostedLlmConfig(res?.config || {});
+  await loadHostedLlmMetrics();
   if ($("hostedLlmStatusText")) {
     $("hostedLlmStatusText").textContent = res?.ok
       ? `Hosted LLM OK via ${String(res.provider || "-")}`
@@ -3898,6 +3956,7 @@ async function runStrategyAudit() {
     body: JSON.stringify({ refresh_strategy: refreshStrategy, use_hosted_llm: useHostedLlm }),
   });
   await loadStrategyAudit();
+  await loadHostedLlmMetrics();
   if ($("strategyAuditStatusText")) {
     $("strategyAuditStatusText").textContent =
       `Strategy audit ${String(res?.overall_status || "ok").toUpperCase()}: ${new Date().toLocaleString()}`;

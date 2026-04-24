@@ -403,6 +403,22 @@ CREATE TABLE IF NOT EXISTS strategy_audit_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_strategy_audit_runs_created ON strategy_audit_runs(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS hosted_llm_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT,
+  status TEXT NOT NULL,
+  latency_ms REAL NOT NULL DEFAULT 0,
+  prompt_chars INTEGER NOT NULL DEFAULT 0,
+  response_chars INTEGER NOT NULL DEFAULT 0,
+  attempt_index INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_hosted_llm_runs_created ON hosted_llm_runs(created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_hosted_llm_runs_provider_created ON hosted_llm_runs(provider, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS strategy_audit_findings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   audit_id INTEGER NOT NULL REFERENCES strategy_audit_runs(id) ON DELETE CASCADE,

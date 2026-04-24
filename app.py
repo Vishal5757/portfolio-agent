@@ -1143,6 +1143,25 @@ def ensure_schema_migrations():
         conn.execute("CREATE INDEX IF NOT EXISTS ix_strategy_audit_runs_created ON strategy_audit_runs(created_at DESC)")
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS hosted_llm_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              purpose TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              model TEXT,
+              status TEXT NOT NULL,
+              latency_ms REAL NOT NULL DEFAULT 0,
+              prompt_chars INTEGER NOT NULL DEFAULT 0,
+              response_chars INTEGER NOT NULL DEFAULT 0,
+              attempt_index INTEGER NOT NULL DEFAULT 0,
+              error TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_hosted_llm_runs_created ON hosted_llm_runs(created_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_hosted_llm_runs_provider_created ON hosted_llm_runs(provider, created_at DESC)")
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS strategy_audit_findings (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               audit_id INTEGER NOT NULL REFERENCES strategy_audit_runs(id) ON DELETE CASCADE,
@@ -1722,6 +1741,112 @@ def _hosted_llm_provider_status_update(conn, provider, status, error=""):
     )
 
 
+def _record_hosted_llm_run(conn, purpose, provider, model, status, latency_ms=0.0, prompt_chars=0, response_chars=0, attempt_index=0, error=""):
+    conn.execute(
+        """
+        INSERT INTO hosted_llm_runs(
+          created_at, purpose, provider, model, status, latency_ms, prompt_chars, response_chars, attempt_index, error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            now_iso(),
+            str(purpose or "general")[:80],
+            str(provider or "")[:40],
+            str(model or "")[:120],
+            str(status or "")[:40],
+            round(parse_float(latency_ms, 0.0), 2),
+            int(parse_float(prompt_chars, 0.0)),
+            int(parse_float(response_chars, 0.0)),
+            int(parse_float(attempt_index, 0.0)),
+            str(error or "")[:800],
+        ),
+    )
+
+
+def hosted_llm_metrics(conn, limit=40):
+    lim = max(1, min(200, int(parse_float(limit, 40))))
+    rows = conn.execute(
+        """
+        SELECT id, created_at, purpose, provider, model, status, latency_ms, prompt_chars, response_chars, attempt_index, error
+        FROM hosted_llm_runs
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (lim,),
+    ).fetchall()
+    items = [
+        {
+            "id": int(parse_float(r["id"], 0.0)),
+            "created_at": str(r["created_at"] or ""),
+            "purpose": str(r["purpose"] or ""),
+            "provider": str(r["provider"] or ""),
+            "model": str(r["model"] or ""),
+            "status": str(r["status"] or ""),
+            "latency_ms": round(parse_float(r["latency_ms"], 0.0), 2),
+            "prompt_chars": int(parse_float(r["prompt_chars"], 0.0)),
+            "response_chars": int(parse_float(r["response_chars"], 0.0)),
+            "attempt_index": int(parse_float(r["attempt_index"], 0.0)),
+            "error": str(r["error"] or ""),
+        }
+        for r in rows
+    ]
+    summary_row = conn.execute(
+        """
+        SELECT
+          COUNT(*) AS total_attempts,
+          SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok_attempts,
+          SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error_attempts,
+          SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped_attempts,
+          AVG(CASE WHEN status='ok' THEN latency_ms ELSE NULL END) AS avg_ok_latency_ms,
+          MAX(created_at) AS last_run_at
+        FROM hosted_llm_runs
+        """
+    ).fetchone()
+    provider_rows = conn.execute(
+        """
+        SELECT provider,
+          COUNT(*) AS attempts,
+          SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok_count,
+          SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error_count,
+          SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped_count,
+          AVG(CASE WHEN status='ok' THEN latency_ms ELSE NULL END) AS avg_ok_latency_ms,
+          MAX(created_at) AS last_run_at
+        FROM hosted_llm_runs
+        GROUP BY provider
+        ORDER BY attempts DESC, provider ASC
+        """
+    ).fetchall()
+    total = int(parse_float(summary_row["total_attempts"] if summary_row else 0, 0.0))
+    ok_count = int(parse_float(summary_row["ok_attempts"] if summary_row else 0, 0.0))
+    summary = {
+        "total_attempts": total,
+        "ok_attempts": ok_count,
+        "error_attempts": int(parse_float(summary_row["error_attempts"] if summary_row else 0, 0.0)),
+        "skipped_attempts": int(parse_float(summary_row["skipped_attempts"] if summary_row else 0, 0.0)),
+        "success_rate_pct": round((ok_count / total) * 100.0, 2) if total > 0 else 0.0,
+        "avg_ok_latency_ms": round(parse_float(summary_row["avg_ok_latency_ms"] if summary_row else 0, 0.0), 2),
+        "last_run_at": str((summary_row["last_run_at"] if summary_row else "") or ""),
+    }
+    providers = []
+    for r in provider_rows:
+        attempts = int(parse_float(r["attempts"], 0.0))
+        ok = int(parse_float(r["ok_count"], 0.0))
+        providers.append(
+            {
+                "provider": str(r["provider"] or ""),
+                "attempts": attempts,
+                "ok_count": ok,
+                "error_count": int(parse_float(r["error_count"], 0.0)),
+                "skipped_count": int(parse_float(r["skipped_count"], 0.0)),
+                "success_rate_pct": round((ok / attempts) * 100.0, 2) if attempts > 0 else 0.0,
+                "avg_ok_latency_ms": round(parse_float(r["avg_ok_latency_ms"], 0.0), 2),
+                "last_run_at": str(r["last_run_at"] or ""),
+            }
+        )
+    return {"summary": summary, "providers": providers, "items": items}
+
+
 def _hosted_llm_chat_once(provider, api_key, model, messages, timeout_sec=HOSTED_LLM_TIMEOUT_SEC):
     if provider not in HOSTED_LLM_PROVIDERS:
         raise ValueError("unsupported_provider")
@@ -1775,25 +1900,65 @@ def hosted_llm_generate(conn, prompt, purpose="strategy_audit"):
         {"role": "user", "content": prompt_text},
     ]
     attempts = []
-    for item in cfg.get("providers") or []:
+    for attempt_index, item in enumerate(cfg.get("providers") or [], start=1):
         provider = str(item.get("provider") or "").strip().lower()
+        model = item.get("model")
         if not item.get("configured"):
-            attempts.append({"provider": provider, "status": "skipped", "error": "api_key_missing"})
+            _record_hosted_llm_run(
+                conn,
+                purpose,
+                provider,
+                model,
+                "skipped",
+                latency_ms=0.0,
+                prompt_chars=len(prompt_text),
+                response_chars=0,
+                attempt_index=attempt_index,
+                error="api_key_missing",
+            )
+            attempts.append({"provider": provider, "status": "skipped", "error": "api_key_missing", "attempt_index": attempt_index})
             continue
         try:
+            started = time.perf_counter()
             text = _hosted_llm_chat_once(
                 provider,
                 item.get("api_key"),
-                item.get("model"),
+                model,
                 messages,
                 timeout_sec=int(cfg.get("timeout_sec") or HOSTED_LLM_TIMEOUT_SEC),
             )
+            latency_ms = (time.perf_counter() - started) * 1000.0
             _hosted_llm_provider_status_update(conn, provider, "ok", "")
-            return {"ok": True, "status": "ok", "provider": provider, "model": item.get("model"), "purpose": purpose, "text": text, "attempts": attempts}
+            _record_hosted_llm_run(
+                conn,
+                purpose,
+                provider,
+                model,
+                "ok",
+                latency_ms=latency_ms,
+                prompt_chars=len(prompt_text),
+                response_chars=len(text),
+                attempt_index=attempt_index,
+                error="",
+            )
+            return {"ok": True, "status": "ok", "provider": provider, "model": model, "purpose": purpose, "text": text, "attempts": attempts, "latency_ms": round(latency_ms, 2)}
         except Exception as exc:
+            latency_ms = (time.perf_counter() - started) * 1000.0 if "started" in locals() else 0.0
             err = str(exc)[:500]
             _hosted_llm_provider_status_update(conn, provider, "error", err)
-            attempts.append({"provider": provider, "status": "error", "error": err})
+            _record_hosted_llm_run(
+                conn,
+                purpose,
+                provider,
+                model,
+                "error",
+                latency_ms=latency_ms,
+                prompt_chars=len(prompt_text),
+                response_chars=0,
+                attempt_index=attempt_index,
+                error=err,
+            )
+            attempts.append({"provider": provider, "status": "error", "error": err, "attempt_index": attempt_index, "latency_ms": round(latency_ms, 2)})
             continue
     return {"ok": False, "status": "failed", "error": "all_hosted_llm_providers_failed", "provider": "", "text": "", "attempts": attempts}
 
@@ -18954,6 +19119,15 @@ class AppHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/v1/hosted-llm/config":
                 json_response(self, get_hosted_llm_config(conn))
+                return
+
+            if path == "/api/v1/hosted-llm/metrics":
+                limit_s = qs.get("limit", ["40"])[0]
+                try:
+                    limit_n = max(1, min(200, int(limit_s)))
+                except Exception:
+                    limit_n = 40
+                json_response(self, hosted_llm_metrics(conn, limit=limit_n))
                 return
 
             if path == "/api/v1/intel/summary":
