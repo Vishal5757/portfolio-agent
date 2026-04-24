@@ -3693,6 +3693,102 @@ function strategyAuditSeverityClass(severity) {
   return "";
 }
 
+function hostedProviderByName(config, name) {
+  const providers = Array.isArray(config?.providers) ? config.providers : [];
+  return providers.find((p) => String(p.provider || "") === name) || {};
+}
+
+function renderHostedLlmConfig(config) {
+  const cfg = config || {};
+  const openrouter = hostedProviderByName(cfg, "openrouter");
+  const groq = hostedProviderByName(cfg, "groq");
+  const huggingface = hostedProviderByName(cfg, "huggingface");
+  if ($("hostedLlmEnabled")) $("hostedLlmEnabled").checked = !!cfg.enabled;
+  if ($("strategyAuditUseHostedLlm")) $("strategyAuditUseHostedLlm").checked = !!cfg.enabled;
+  if ($("hostedLlmProviderOrder")) $("hostedLlmProviderOrder").value = String(cfg.provider_order || "openrouter,groq,huggingface");
+  if ($("hostedLlmTimeoutSec")) $("hostedLlmTimeoutSec").value = Number(cfg.timeout_sec || 45);
+  if ($("hostedLlmOpenrouterModel")) $("hostedLlmOpenrouterModel").value = String(openrouter.model || "openrouter/free");
+  if ($("hostedLlmGroqModel")) $("hostedLlmGroqModel").value = String(groq.model || "llama-3.1-8b-instant");
+  if ($("hostedLlmHuggingfaceModel")) $("hostedLlmHuggingfaceModel").value = String(huggingface.model || "Qwen/Qwen2.5-7B-Instruct");
+  if ($("hostedLlmOpenrouterKey")) $("hostedLlmOpenrouterKey").value = "";
+  if ($("hostedLlmGroqKey")) $("hostedLlmGroqKey").value = "";
+  if ($("hostedLlmHuggingfaceKey")) $("hostedLlmHuggingfaceKey").value = "";
+  if ($("hostedLlmSummary")) {
+    const providers = Array.isArray(cfg.providers) ? cfg.providers : [];
+    $("hostedLlmSummary").innerHTML = `
+      <div class="metric ${cfg.enabled ? "pos" : ""}">Mode: ${cfg.enabled ? "Enabled" : "Disabled"}</div>
+      <div class="metric">Order: ${escapeHtml(String(cfg.provider_order || "-"))}</div>
+      <div class="metric">Timeout: ${Number(cfg.timeout_sec || 0)} sec</div>
+      <div class="metric" style="grid-column: 1 / -1;">Privacy: ${escapeHtml(String(cfg.privacy_note || "-"))}</div>
+      ${providers
+        .map(
+          (p) => `
+            <div class="metric ${p.configured ? "pos" : "warn"}">
+              ${escapeHtml(String(p.label || p.provider || ""))}: ${p.configured ? "configured" : "missing key"}<br>
+              Model: ${escapeHtml(String(p.model || "-"))}<br>
+              Last: ${escapeHtml(String(p.last_status || "-"))} ${p.last_error ? `| ${escapeHtml(String(p.last_error))}` : ""}
+            </div>`
+        )
+        .join("")}
+    `;
+  }
+}
+
+async function loadHostedLlmConfig(options = {}) {
+  const throwOnError = !!options.throwOnError;
+  try {
+    const cfg = await api("/api/v1/hosted-llm/config");
+    renderHostedLlmConfig(cfg || {});
+    if ($("hostedLlmStatusText")) $("hostedLlmStatusText").textContent = `Hosted LLM: ${cfg?.enabled ? "enabled" : "disabled"}`;
+  } catch (e) {
+    const meta = normalizeUiError(e, "HOSTED_LLM_CONFIG_LOAD_FAILED");
+    if ($("hostedLlmStatusText")) $("hostedLlmStatusText").textContent = `Hosted LLM error: ${meta.reason}`;
+    if (throwOnError) throw e;
+  }
+}
+
+async function saveHostedLlmConfig() {
+  const providers = [
+    {
+      provider: "openrouter",
+      api_key: $("hostedLlmOpenrouterKey")?.value || "",
+      model: $("hostedLlmOpenrouterModel")?.value || "",
+    },
+    {
+      provider: "groq",
+      api_key: $("hostedLlmGroqKey")?.value || "",
+      model: $("hostedLlmGroqModel")?.value || "",
+    },
+    {
+      provider: "huggingface",
+      api_key: $("hostedLlmHuggingfaceKey")?.value || "",
+      model: $("hostedLlmHuggingfaceModel")?.value || "",
+    },
+  ];
+  const cfg = await api("/api/v1/hosted-llm/config", {
+    method: "POST",
+    body: JSON.stringify({
+      enabled: !!$("hostedLlmEnabled")?.checked,
+      provider_order: $("hostedLlmProviderOrder")?.value || "openrouter,groq,huggingface",
+      timeout_sec: Number($("hostedLlmTimeoutSec")?.value || 45),
+      providers,
+    }),
+  });
+  renderHostedLlmConfig(cfg || {});
+  if ($("hostedLlmStatusText")) $("hostedLlmStatusText").textContent = `Hosted LLM saved: ${new Date().toLocaleString()}`;
+}
+
+async function testHostedLlmConfig() {
+  if ($("hostedLlmStatusText")) $("hostedLlmStatusText").textContent = "Hosted LLM test running...";
+  const res = await api("/api/v1/hosted-llm/test", { method: "POST", body: JSON.stringify({}) });
+  renderHostedLlmConfig(res?.config || {});
+  if ($("hostedLlmStatusText")) {
+    $("hostedLlmStatusText").textContent = res?.ok
+      ? `Hosted LLM OK via ${String(res.provider || "-")}`
+      : `Hosted LLM failed: ${String(res.message || res.status || "-")}`;
+  }
+}
+
 function renderStrategyAudit(payload) {
   const p = payload || {};
   state.strategyAuditRaw = p;
@@ -3796,9 +3892,10 @@ async function runStrategyAudit() {
     $("strategyAuditStatusText").textContent = `Strategy audit running: ${new Date().toLocaleString()}`;
   }
   const refreshStrategy = !!$("strategyAuditRefreshFirst")?.checked;
+  const useHostedLlm = !!$("strategyAuditUseHostedLlm")?.checked;
   const res = await api("/api/v1/strategy/audits/run", {
     method: "POST",
-    body: JSON.stringify({ refresh_strategy: refreshStrategy }),
+    body: JSON.stringify({ refresh_strategy: refreshStrategy, use_hosted_llm: useHostedLlm }),
   });
   await loadStrategyAudit();
   if ($("strategyAuditStatusText")) {
@@ -5091,6 +5188,7 @@ function bindEvents() {
       }
       if (tab === "strategyaudit") {
         await loadStrategyAudit();
+        await loadHostedLlmConfig();
       }
       if (tab === "attention") {
         await loadAttentionConsole();
@@ -5146,6 +5244,8 @@ function bindEvents() {
   registerButton("refreshStrategyBtn", refreshStrategyNow, { actionName: "Refresh Strategy", errorCode: "STRATEGY_REFRESH_FAILED" });
   registerButton("strategyAuditRunBtn", runStrategyAudit, { actionName: "Run Strategy Audit", errorCode: "STRATEGY_AUDIT_RUN_FAILED" });
   registerButton("strategyAuditRefreshBtn", () => loadStrategyAudit({ throwOnError: true }), { actionName: "Refresh Strategy Audit", errorCode: "STRATEGY_AUDIT_LOAD_FAILED" });
+  registerButton("hostedLlmSaveBtn", saveHostedLlmConfig, { actionName: "Save Hosted LLM", errorCode: "HOSTED_LLM_SAVE_FAILED" });
+  registerButton("hostedLlmTestBtn", testHostedLlmConfig, { actionName: "Test Hosted LLM", errorCode: "HOSTED_LLM_TEST_FAILED" });
   registerButton("attentionRefreshBtn", () => loadAttentionConsole({ throwOnError: true }), { actionName: "Refresh Attention Console", errorCode: "ATTENTION_LOAD_FAILED" });
   registerButton("attentionRunTaxMonitorBtn", runAttentionTaxMonitor, { actionName: "Run Tax Monitor", errorCode: "TAX_MONITOR_RUN_FAILED" });
   registerButton("intelRefreshBtn", loadIntelSummary, { actionName: "Refresh Intelligence", errorCode: "INTEL_REFRESH_FAILED" });

@@ -1549,6 +1549,13 @@ def ensure_default_config():
         "risk_agent_last_run_at": "",
         "risk_agent_lookback_days": "252",
         "risk_agent_winsorize_pct": "0.05",
+        "hosted_llm_enabled": "0",
+        "hosted_llm_provider_order": HOSTED_LLM_DEFAULT_ORDER,
+        "hosted_llm_timeout_sec": str(HOSTED_LLM_TIMEOUT_SEC),
+        "hosted_llm_max_prompt_chars": str(HOSTED_LLM_MAX_PROMPT_CHARS),
+        "hosted_llm_openrouter_model": HOSTED_LLM_PROVIDERS["openrouter"]["model"],
+        "hosted_llm_groq_model": HOSTED_LLM_PROVIDERS["groq"]["model"],
+        "hosted_llm_huggingface_model": HOSTED_LLM_PROVIDERS["huggingface"]["model"],
     }
     with db_connect() as conn:
         for key, value in defaults.items():
@@ -1585,6 +1592,224 @@ def _app_config_upsert_many(conn, mapping):
             """,
             (str(key), str(value), stamp),
         )
+
+
+HOSTED_LLM_PROVIDERS = {
+    "openrouter": {
+        "label": "OpenRouter Free Router",
+        "base_url": "https://openrouter.ai/api/v1/chat/completions",
+        "model": "openrouter/free",
+        "api_key_config": "hosted_llm_openrouter_api_key",
+        "notes": "Routes to available free OpenRouter models. Requires a free OpenRouter API key.",
+    },
+    "groq": {
+        "label": "Groq Free Tier",
+        "base_url": "https://api.groq.com/openai/v1/chat/completions",
+        "model": "llama-3.1-8b-instant",
+        "api_key_config": "hosted_llm_groq_api_key",
+        "notes": "Fast hosted inference. Requires a free Groq API key and is subject to free-tier limits.",
+    },
+    "huggingface": {
+        "label": "Hugging Face Inference Providers",
+        "base_url": "https://router.huggingface.co/v1/chat/completions",
+        "model": "Qwen/Qwen2.5-7B-Instruct",
+        "api_key_config": "hosted_llm_huggingface_api_key",
+        "notes": "Hosted inference provider router. Requires a free Hugging Face token.",
+    },
+}
+HOSTED_LLM_DEFAULT_ORDER = "openrouter,groq,huggingface"
+HOSTED_LLM_MAX_PROMPT_CHARS = 7000
+HOSTED_LLM_TIMEOUT_SEC = 45
+
+
+def _mask_secret(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 8:
+        return "****"
+    return f"{raw[:4]}...{raw[-4:]}"
+
+
+def get_hosted_llm_config(conn, include_keys=False):
+    keys = [
+        "hosted_llm_enabled",
+        "hosted_llm_provider_order",
+        "hosted_llm_timeout_sec",
+        "hosted_llm_max_prompt_chars",
+    ]
+    for provider, spec in HOSTED_LLM_PROVIDERS.items():
+        keys.extend(
+            [
+                spec["api_key_config"],
+                f"hosted_llm_{provider}_model",
+                f"hosted_llm_{provider}_last_status",
+                f"hosted_llm_{provider}_last_error",
+                f"hosted_llm_{provider}_last_checked_at",
+            ]
+        )
+    cfg = _app_config_get_many(conn, keys)
+    order = parse_source_list(cfg.get("hosted_llm_provider_order") or HOSTED_LLM_DEFAULT_ORDER)
+    order = [p for p in order if p in HOSTED_LLM_PROVIDERS] or parse_source_list(HOSTED_LLM_DEFAULT_ORDER)
+    providers = []
+    for provider in order:
+        spec = HOSTED_LLM_PROVIDERS[provider]
+        api_key = str(cfg.get(spec["api_key_config"]) or "").strip()
+        providers.append(
+            {
+                "provider": provider,
+                "label": spec["label"],
+                "model": str(cfg.get(f"hosted_llm_{provider}_model") or spec["model"]),
+                "configured": bool(api_key),
+                "api_key": api_key if include_keys else _mask_secret(api_key),
+                "last_status": str(cfg.get(f"hosted_llm_{provider}_last_status") or ""),
+                "last_error": str(cfg.get(f"hosted_llm_{provider}_last_error") or ""),
+                "last_checked_at": str(cfg.get(f"hosted_llm_{provider}_last_checked_at") or ""),
+                "notes": spec["notes"],
+            }
+        )
+    return {
+        "enabled": str(cfg.get("hosted_llm_enabled", "0")) == "1",
+        "provider_order": ",".join(order),
+        "timeout_sec": max(10, min(120, int(parse_float(cfg.get("hosted_llm_timeout_sec"), HOSTED_LLM_TIMEOUT_SEC)))),
+        "max_prompt_chars": max(1000, min(20000, int(parse_float(cfg.get("hosted_llm_max_prompt_chars"), HOSTED_LLM_MAX_PROMPT_CHARS)))),
+        "providers": providers,
+        "mode": "hosted_free_tier_optional",
+        "privacy_note": "Prompts are sent to the selected hosted provider. Keep disabled for fully local/private operation.",
+    }
+
+
+def set_hosted_llm_config(conn, payload):
+    body = dict(payload or {})
+    updates = {}
+    if "enabled" in body:
+        updates["hosted_llm_enabled"] = "1" if parse_bool(body.get("enabled"), default=False) else "0"
+    if "provider_order" in body:
+        order = [p for p in parse_source_list(body.get("provider_order")) if p in HOSTED_LLM_PROVIDERS]
+        updates["hosted_llm_provider_order"] = ",".join(order or parse_source_list(HOSTED_LLM_DEFAULT_ORDER))
+    if "timeout_sec" in body:
+        updates["hosted_llm_timeout_sec"] = max(10, min(120, int(parse_float(body.get("timeout_sec"), HOSTED_LLM_TIMEOUT_SEC))))
+    if "max_prompt_chars" in body:
+        updates["hosted_llm_max_prompt_chars"] = max(1000, min(20000, int(parse_float(body.get("max_prompt_chars"), HOSTED_LLM_MAX_PROMPT_CHARS))))
+    providers = body.get("providers")
+    if isinstance(providers, list):
+        for item in providers:
+            provider = str((item or {}).get("provider") or "").strip().lower()
+            if provider not in HOSTED_LLM_PROVIDERS:
+                continue
+            spec = HOSTED_LLM_PROVIDERS[provider]
+            if "model" in item:
+                updates[f"hosted_llm_{provider}_model"] = str(item.get("model") or spec["model"]).strip() or spec["model"]
+            if "api_key" in item:
+                key = str(item.get("api_key") or "").strip()
+                if key and "****" not in key and "..." not in key:
+                    updates[spec["api_key_config"]] = key
+    if updates:
+        _app_config_upsert_many(conn, updates)
+    return get_hosted_llm_config(conn)
+
+
+def _hosted_llm_provider_status_update(conn, provider, status, error=""):
+    if provider not in HOSTED_LLM_PROVIDERS:
+        return
+    _app_config_upsert_many(
+        conn,
+        {
+            f"hosted_llm_{provider}_last_status": str(status or ""),
+            f"hosted_llm_{provider}_last_error": str(error or "")[:500],
+            f"hosted_llm_{provider}_last_checked_at": now_iso(),
+        },
+    )
+
+
+def _hosted_llm_chat_once(provider, api_key, model, messages, timeout_sec=HOSTED_LLM_TIMEOUT_SEC):
+    if provider not in HOSTED_LLM_PROVIDERS:
+        raise ValueError("unsupported_provider")
+    if not str(api_key or "").strip():
+        raise ValueError("api_key_missing")
+    spec = HOSTED_LLM_PROVIDERS[provider]
+    headers = {
+        "Authorization": f"Bearer {str(api_key).strip()}",
+        "Content-Type": "application/json",
+        "User-Agent": "PortfolioAgent/1.0",
+    }
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "http://127.0.0.1:8080"
+        headers["X-Title"] = "Portfolio Rotation Agent"
+    payload = {
+        "model": str(model or spec["model"]),
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 700,
+    }
+    opener = urllib.request.build_opener()
+    out = _http_json_post(opener, spec["base_url"], headers, payload, timeout=timeout_sec)
+    choices = out.get("choices") if isinstance(out, dict) else None
+    if not choices:
+        raise RuntimeError("no_choices_returned")
+    msg = (choices[0] or {}).get("message") or {}
+    text = str(msg.get("content") or "").strip()
+    if not text:
+        text = str((choices[0] or {}).get("text") or "").strip()
+    if not text:
+        raise RuntimeError("empty_response")
+    return text
+
+
+def hosted_llm_generate(conn, prompt, purpose="strategy_audit"):
+    cfg = get_hosted_llm_config(conn, include_keys=True)
+    if not cfg.get("enabled"):
+        return {"ok": False, "status": "disabled", "error": "hosted_llm_disabled", "provider": "", "text": ""}
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        return {"ok": False, "status": "invalid", "error": "prompt_empty", "provider": "", "text": ""}
+    prompt_text = prompt_text[: int(cfg.get("max_prompt_chars") or HOSTED_LLM_MAX_PROMPT_CHARS)]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a cautious portfolio strategy reviewer. Do not provide personalized financial advice. "
+                "Summarize risks, contradictions, and checks in concise bullets. Never claim certainty."
+            ),
+        },
+        {"role": "user", "content": prompt_text},
+    ]
+    attempts = []
+    for item in cfg.get("providers") or []:
+        provider = str(item.get("provider") or "").strip().lower()
+        if not item.get("configured"):
+            attempts.append({"provider": provider, "status": "skipped", "error": "api_key_missing"})
+            continue
+        try:
+            text = _hosted_llm_chat_once(
+                provider,
+                item.get("api_key"),
+                item.get("model"),
+                messages,
+                timeout_sec=int(cfg.get("timeout_sec") or HOSTED_LLM_TIMEOUT_SEC),
+            )
+            _hosted_llm_provider_status_update(conn, provider, "ok", "")
+            return {"ok": True, "status": "ok", "provider": provider, "model": item.get("model"), "purpose": purpose, "text": text, "attempts": attempts}
+        except Exception as exc:
+            err = str(exc)[:500]
+            _hosted_llm_provider_status_update(conn, provider, "error", err)
+            attempts.append({"provider": provider, "status": "error", "error": err})
+            continue
+    return {"ok": False, "status": "failed", "error": "all_hosted_llm_providers_failed", "provider": "", "text": "", "attempts": attempts}
+
+
+def test_hosted_llm_config(conn):
+    result = hosted_llm_generate(conn, "Return exactly one short sentence confirming the hosted free-tier LLM is reachable.", purpose="connectivity_test")
+    conn.commit()
+    return {
+        "ok": bool(result.get("ok")),
+        "status": str(result.get("status") or ""),
+        "provider": str(result.get("provider") or ""),
+        "model": str(result.get("model") or ""),
+        "message": str(result.get("text") or result.get("error") or ""),
+        "attempts": result.get("attempts") or [],
+        "config": get_hosted_llm_config(conn),
+    }
 
 
 def get_tax_profile_config(conn):
@@ -1789,7 +2014,17 @@ def _sql_dump_for_db(db_path):
         lines = list(conn.iterdump())
     finally:
         conn.close()
-    secret_keys = ("llm_api_key", "llm_model", "llm_api_url", "llm_last_status", "llm_last_error", "llm_last_checked_at")
+    secret_keys = (
+        "llm_api_key",
+        "llm_model",
+        "llm_api_url",
+        "llm_last_status",
+        "llm_last_error",
+        "llm_last_checked_at",
+        "hosted_llm_openrouter_api_key",
+        "hosted_llm_groq_api_key",
+        "hosted_llm_huggingface_api_key",
+    )
     lines = [
         line
         for line in lines
@@ -8508,7 +8743,40 @@ def list_strategy_audit_runs(conn, limit=25):
     return {"items": items, "latest": latest}
 
 
-def run_strategy_audit(conn, refresh_strategy=False):
+def _strategy_audit_llm_prompt(payload):
+    stats = dict(payload.get("stats") or {})
+    findings = list(payload.get("findings") or [])[:12]
+    snapshot = dict(payload.get("strategy_snapshot") or {})
+    compact_findings = [
+        {
+            "severity": f.get("severity"),
+            "code": f.get("code"),
+            "symbol": f.get("symbol"),
+            "title": f.get("title"),
+            "detail": f.get("detail"),
+        }
+        for f in findings
+    ]
+    return (
+        "Review this portfolio strategy audit. Focus on whether the current rotation plan looks operationally sensible, "
+        "which risks require human attention, and what should be checked before executing trades. "
+        "Keep the answer under 8 bullets and do not recommend specific investment action.\n\n"
+        + _safe_json_dumps(
+            {
+                "summary": payload.get("summary"),
+                "recommendation": payload.get("recommendation"),
+                "overall_status": payload.get("overall_status"),
+                "overall_score": payload.get("overall_score"),
+                "stats": stats,
+                "strategy_snapshot": snapshot,
+                "top_findings": compact_findings,
+                "backtest": payload.get("backtest"),
+            }
+        )
+    )
+
+
+def run_strategy_audit(conn, refresh_strategy=False, use_hosted_llm=False):
     refresh_flag = bool(refresh_strategy)
     today = dt.date.today().isoformat()
     insights = load_latest_strategy_insights(conn)
@@ -8756,6 +9024,46 @@ def run_strategy_audit(conn, refresh_strategy=False):
             "avg_future_return": round(parse_float((bt or {}).get("avg_future_return"), 0.0), 4),
         },
     }
+    if use_hosted_llm:
+        llm_result = hosted_llm_generate(conn, _strategy_audit_llm_prompt(payload), purpose="strategy_audit")
+        stats["hosted_llm_status"] = str(llm_result.get("status") or "")
+        stats["hosted_llm_provider"] = str(llm_result.get("provider") or "")
+        if llm_result.get("ok"):
+            payload["audit_mode"] = "heuristic+hosted_free_llm"
+            payload["recommendation"] = (
+                f"{payload['recommendation']}\n\nHosted LLM review ({llm_result.get('provider')}): "
+                f"{str(llm_result.get('text') or '').strip()}"
+            )
+            findings.append(
+                _strategy_audit_finding(
+                    "info",
+                    "hosted_llm_review",
+                    "Hosted free-tier LLM review attached",
+                    str(llm_result.get("text") or "").strip()[:1000],
+                    expected_range="Advisory only",
+                )
+            )
+            info_count += 1
+        else:
+            findings.append(
+                _strategy_audit_finding(
+                    "warn",
+                    "hosted_llm_unavailable",
+                    "Hosted free-tier LLM unavailable",
+                    f"{llm_result.get('error') or 'No hosted provider responded.'} Heuristic audit was used.",
+                    expected_range="At least one configured provider succeeds",
+                )
+            )
+            warn_count += 1
+            payload["overall_status"] = "critical" if critical_count > 0 else "warn"
+            payload["overall_score"] = round(clamp(parse_float(payload.get("overall_score"), 0.0) - 4.0, 0.0, 100.0), 2)
+            payload["summary"] = f"{critical_count} critical, {warn_count} warning, {info_count} info finding(s). Audit score {payload['overall_score']:.1f}/100."
+        stats["critical_count"] = critical_count
+        stats["warn_count"] = warn_count
+        stats["info_count"] = info_count
+        payload["findings"] = findings
+        payload["findings_count"] = len(findings)
+        payload["stats"] = stats
     _persist_strategy_audit_run(conn, payload)
     conn.commit()
     return payload
@@ -18644,6 +18952,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                 json_response(self, out.get("latest") or {"latest": None})
                 return
 
+            if path == "/api/v1/hosted-llm/config":
+                json_response(self, get_hosted_llm_config(conn))
+                return
+
             if path == "/api/v1/intel/summary":
                 limit_s = qs.get("limit", ["40"])[0]
                 try:
@@ -19193,15 +19505,34 @@ class AppHandler(SimpleHTTPRequestHandler):
             body = self._read_json()
             try:
                 refresh_first = parse_bool(body.get("refresh_strategy", False), default=False)
+                use_hosted_llm = parse_bool(body.get("use_hosted_llm", False), default=False)
             except ValueError:
-                json_response(self, {"error": "refresh_strategy_must_be_boolean"}, HTTPStatus.BAD_REQUEST)
+                json_response(self, {"error": "refresh_strategy_or_llm_flag_must_be_boolean"}, HTTPStatus.BAD_REQUEST)
                 return
             with db_connect() as conn:
                 try:
-                    out = run_strategy_audit(conn, refresh_strategy=refresh_first)
+                    out = run_strategy_audit(conn, refresh_strategy=refresh_first, use_hosted_llm=use_hosted_llm)
                 except ValueError as ex:
                     json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
                     return
+            json_response(self, out)
+            return
+
+        if parsed.path == "/api/v1/hosted-llm/config":
+            body = self._read_json()
+            with db_connect() as conn:
+                try:
+                    out = set_hosted_llm_config(conn, body)
+                    conn.commit()
+                except ValueError as ex:
+                    json_response(self, {"error": str(ex)}, HTTPStatus.BAD_REQUEST)
+                    return
+            json_response(self, out)
+            return
+
+        if parsed.path == "/api/v1/hosted-llm/test":
+            with db_connect() as conn:
+                out = test_hosted_llm_config(conn)
             json_response(self, out)
             return
 

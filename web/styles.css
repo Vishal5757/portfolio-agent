@@ -198,6 +198,31 @@ p {
   flex-wrap: wrap;
 }
 
+.subcard {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  margin: 12px 0;
+  background: rgba(255, 253, 250, 0.72);
+}
+
+.subcard h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.grid-3 > div {
+  display: grid;
+  gap: 6px;
+}
+
 select,
 input,
 textarea {

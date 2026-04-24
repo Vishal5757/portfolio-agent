@@ -617,13 +617,50 @@
 
     <section class="card tab-section hidden" data-tab="strategyaudit">
       <h2>Strategy Audit</h2>
-      <p>Low-cost audit engine for the strategy layer. This uses stored strategy recommendations, confidence, sizing mix, and latest backtest data. No live LLM API is required.</p>
+      <p>Low-cost audit engine for the strategy layer. Heuristic audit always works; hosted free-tier LLM review is optional and rotates across configured providers.</p>
       <div class="row">
         <button id="strategyAuditRunBtn" class="btn secondary">Run Strategy Audit</button>
         <label for="strategyAuditRefreshFirst">Refresh Strategy First</label>
         <input id="strategyAuditRefreshFirst" type="checkbox">
+        <label for="strategyAuditUseHostedLlm">Use Hosted Free LLM</label>
+        <input id="strategyAuditUseHostedLlm" type="checkbox">
         <button id="strategyAuditRefreshBtn" class="btn">Refresh Audit View</button>
         <span id="strategyAuditStatusText" class="metric">Strategy audit: -</span>
+      </div>
+      <div class="subcard">
+        <h3>Hosted Free-Tier LLM Mix</h3>
+        <p>Optional, no local install. Free tiers still need provider API keys and can rate-limit; if all fail, the heuristic audit remains active.</p>
+        <div class="row">
+          <label for="hostedLlmEnabled">Enable</label>
+          <input id="hostedLlmEnabled" type="checkbox">
+          <label for="hostedLlmProviderOrder">Provider Order</label>
+          <input id="hostedLlmProviderOrder" type="text" placeholder="openrouter,groq,huggingface">
+          <label for="hostedLlmTimeoutSec">Timeout Sec</label>
+          <input id="hostedLlmTimeoutSec" type="number" min="10" max="120" step="1">
+        </div>
+        <div class="grid-3">
+          <div>
+            <label for="hostedLlmOpenrouterKey">OpenRouter Key</label>
+            <input id="hostedLlmOpenrouterKey" type="password" placeholder="leave blank to keep existing">
+            <input id="hostedLlmOpenrouterModel" type="text" placeholder="openrouter/free">
+          </div>
+          <div>
+            <label for="hostedLlmGroqKey">Groq Key</label>
+            <input id="hostedLlmGroqKey" type="password" placeholder="leave blank to keep existing">
+            <input id="hostedLlmGroqModel" type="text" placeholder="llama-3.1-8b-instant">
+          </div>
+          <div>
+            <label for="hostedLlmHuggingfaceKey">Hugging Face Token</label>
+            <input id="hostedLlmHuggingfaceKey" type="password" placeholder="leave blank to keep existing">
+            <input id="hostedLlmHuggingfaceModel" type="text" placeholder="Qwen/Qwen2.5-7B-Instruct">
+          </div>
+        </div>
+        <div class="row">
+          <button id="hostedLlmSaveBtn" class="btn secondary">Save Hosted LLM</button>
+          <button id="hostedLlmTestBtn" class="btn">Test Hosted LLM</button>
+          <span id="hostedLlmStatusText" class="metric">Hosted LLM: -</span>
+        </div>
+        <div id="hostedLlmSummary" class="perf-summary"></div>
       </div>
       <div id="strategyAuditSummary" class="perf-summary"></div>
       <div class="table-wrap table-wrap-rows-5">

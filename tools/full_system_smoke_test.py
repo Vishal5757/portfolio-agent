@@ -437,7 +437,7 @@ def run():
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
         expect("CREATE TABLE IF NOT EXISTS strategy_audit_runs" in py, "strategy audit run table missing")
         expect("CREATE TABLE IF NOT EXISTS strategy_audit_findings" in py, "strategy audit findings table missing")
-        expect("def run_strategy_audit(conn, refresh_strategy=False):" in py, "strategy audit runner missing")
+        expect("def run_strategy_audit(conn, refresh_strategy=False" in py, "strategy audit runner missing")
         expect("def list_strategy_audit_runs(conn, limit=25):" in py, "strategy audit history helper missing")
         expect("/api/v1/strategy/audits" in py, "strategy audit list endpoint missing")
         expect("/api/v1/strategy/audits/run" in py, "strategy audit run endpoint missing")
@@ -492,19 +492,21 @@ def run():
         expect("harvestRunAnalysisBtn" in js, "harvest dynamic analysis button not wired")
 
     check("harvest_planner_contract", harvest_planner_contract)
-    def no_llm_runtime_contract():
+    def hosted_free_llm_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         js = (root / "web" / "app.js").read_text(encoding="utf-8")
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
         perf = (root / "portfolio_agent" / "software_performance.py").read_text(encoding="utf-8")
-        expect("/api/v1/llm/config" not in py, "llm config endpoint should be removed")
-        expect("/api/v1/llm/test" not in py, "llm test endpoint should be removed")
-        expect("loadLlmConfig" not in js, "llm config ui loader should be removed")
-        expect("saveLlmConfigBtn" not in js and "testLlmConfigBtn" not in js, "llm buttons should be removed")
-        expect('id="llmApiKeyInput"' not in html, "llm api key input should be removed")
+        expect("/api/v1/hosted-llm/config" in py, "hosted free-tier llm config endpoint missing")
+        expect("/api/v1/hosted-llm/test" in py, "hosted free-tier llm test endpoint missing")
+        expect("HOSTED_LLM_PROVIDERS" in py and "openrouter" in py and "groq" in py and "huggingface" in py, "hosted llm provider mix missing")
+        expect("function loadHostedLlmConfig" in js and "function saveHostedLlmConfig" in js, "hosted llm ui config functions missing")
+        expect("hostedLlmSaveBtn" in js and "hostedLlmTestBtn" in js, "hosted llm buttons not wired")
+        expect('id="strategyAuditUseHostedLlm"' in html, "strategy audit hosted llm toggle missing")
+        expect('id="hostedLlmOpenrouterKey"' in html and 'id="hostedLlmGroqKey"' in html and 'id="hostedLlmHuggingfaceKey"' in html, "hosted llm provider key inputs missing")
         expect("_software_perf_generate_local_proposal" in perf, "software perf local proposal generator missing")
 
-    check("no_llm_runtime_contract", no_llm_runtime_contract)
+    check("hosted_free_llm_contract", hosted_free_llm_contract)
     def equity_gold_source_guard_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         expect('if source == "gold_rate_scrape" and ac != ASSET_CLASS_GOLD:' in py, "equity gold-source plausibility guard missing")
@@ -896,6 +898,32 @@ def run():
             expect(str(latest.get("audit_mode") or "") == "heuristic", "strategy audit mode mismatch")
 
     check("strategy_audit", strategy_audit_runtime)
+    def hosted_free_llm_runtime():
+        _, cfg = req("GET", "/api/v1/hosted-llm/config", expected=200)
+        expect("providers" in cfg and "enabled" in cfg, "hosted llm config payload incomplete")
+        for provider in cfg.get("providers") or []:
+            key_val = str(provider.get("api_key") or "")
+            expect((not key_val) or ("****" in key_val) or ("..." in key_val), "hosted llm config exposed raw key")
+        _, saved = req(
+            "POST",
+            "/api/v1/hosted-llm/config",
+            {
+                "enabled": False,
+                "provider_order": "openrouter,groq,huggingface",
+                "timeout_sec": 15,
+                "providers": [
+                    {"provider": "openrouter", "model": "openrouter/free"},
+                    {"provider": "groq", "model": "llama-3.1-8b-instant"},
+                    {"provider": "huggingface", "model": "Qwen/Qwen2.5-7B-Instruct"},
+                ],
+            },
+            expected=200,
+        )
+        expect(saved.get("enabled") is False, "hosted llm disabled config did not persist")
+        _, test = req("POST", "/api/v1/hosted-llm/test", {}, expected=200)
+        expect(test.get("ok") is False and test.get("status") == "disabled", "disabled hosted llm test should fail gracefully")
+
+    check("hosted_free_llm", hosted_free_llm_runtime)
 
     check(
         "intel_doc_analyze",
