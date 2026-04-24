@@ -2771,6 +2771,7 @@ function renderDailyTargetPlan(payload) {
   const activePairs = pairs.filter((r) => !isClosedDailyTargetState(r?.state));
   const completedPairs = pairs.filter((r) => isClosedDailyTargetState(r?.state));
   const snapshots = Array.isArray(p.snapshots) ? p.snapshots : [];
+  const fullCycles = Array.isArray(p.full_cycles) ? p.full_cycles.slice(0, 10) : [];
   state.dailyTargetPlanRaw = p;
   if ($("dailyTargetSummary")) {
     const taxMode = String(summary.tax_mode || "-").replaceAll("_", " ");
@@ -2823,6 +2824,28 @@ function renderDailyTargetPlan(payload) {
       <div class="metric">Latest Symbol: ${escapeHtml(String(perf.latest_symbol || "-"))}</div>
       <div class="metric">Latest Trade Date: ${escapeHtml(String(perf.latest_trade_date || "-"))}</div>
     `;
+  }
+  const fullCycleBody = $("dailyTargetFullCycleTable")?.querySelector("tbody");
+  if (fullCycleBody) {
+    fullCycleBody.innerHTML = fullCycles.length
+      ? fullCycles
+          .map(
+            (r) => `
+              <tr>
+                <td>${escapeHtml(String(r.exit_at || "-"))}</td>
+                <td>${escapeHtml(String(r.symbol || ""))}</td>
+                <td>${money(r.qty)}</td>
+                <td>${money(r.entry_price)}</td>
+                <td>${money(r.exit_price)}</td>
+                <td>${money(r.entry_value)}</td>
+                <td>${money(r.exit_value)}</td>
+                <td class="${clsBySign(r.realized_profit)}">${money(r.realized_profit)}</td>
+                <td>#${Number(r.source_pair_id || 0)} -> #${Number(r.exit_pair_id || 0)}</td>
+                <td class="reason-cell">${escapeHtml(String(r.comment || ""))}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="10">No full cycle completed yet.</td></tr>';
   }
   const body = $("dailyTargetTable")?.querySelector("tbody");
   if (body) {
@@ -3023,9 +3046,11 @@ async function loadDailyTargetPlan(options = {}) {
     if ($("dailyTargetSummary")) $("dailyTargetSummary").innerHTML = `<div class="metric neg">Daily target unavailable: ${escapeHtml(meta.reason)}</div>`;
     const body = $("dailyTargetTable")?.querySelector("tbody");
     const completedBody = $("dailyTargetCompletedTable")?.querySelector("tbody");
+    const fullCycleBody = $("dailyTargetFullCycleTable")?.querySelector("tbody");
     const snapBody = $("dailyTargetSnapshotsTable")?.querySelector("tbody");
     if (body) body.innerHTML = '<tr><td colspan="17">Failed to load daily target ideas.</td></tr>';
     if (completedBody) completedBody.innerHTML = '<tr><td colspan="9">Failed to load completed current-cycle items.</td></tr>';
+    if (fullCycleBody) fullCycleBody.innerHTML = '<tr><td colspan="10">Failed to load full cycle history.</td></tr>';
     if (snapBody) snapBody.innerHTML = '<tr><td colspan="9">Failed to load recalibration log.</td></tr>';
     if (throwOnError) throw e;
   }

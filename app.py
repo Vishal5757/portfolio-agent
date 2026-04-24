@@ -971,6 +971,14 @@ def ensure_schema_migrations():
             conn.execute("ALTER TABLE daily_target_positions ADD COLUMN closed_qty REAL NOT NULL DEFAULT 0")
         if "realized_profit" not in dtp_cols:
             conn.execute("ALTER TABLE daily_target_positions ADD COLUMN realized_profit REAL NOT NULL DEFAULT 0")
+        if "exit_pair_id" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN exit_pair_id INTEGER")
+        if "exit_price" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN exit_price REAL")
+        if "exit_value" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN exit_value REAL")
+        if "exit_at" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN exit_at TEXT")
         conn.execute("UPDATE daily_target_positions SET initial_qty = qty WHERE COALESCE(initial_qty,0) <= 0 AND COALESCE(qty,0) > 0")
         conn.execute(
             """
@@ -11106,6 +11114,36 @@ def reconcile_daily_target_trade_links(conn, plan_id=None):
         )
 
 
+def _append_daily_target_full_cycle_note(conn, exit_pair_id, cycles):
+    if not cycles:
+        return
+    pid = int(parse_float(exit_pair_id, 0.0))
+    row = conn.execute(
+        "SELECT completion_note FROM daily_target_plan_pairs WHERE id = ?",
+        (pid,),
+    ).fetchone()
+    if not row:
+        return
+    existing = str(row["completion_note"] or "").strip()
+    lines = [existing] if existing else []
+    existing_lower = existing.lower()
+    for c in cycles:
+        marker = f"full cycle complete #{int(c['position_id'])}"
+        if marker.lower() in existing_lower:
+            continue
+        lines.append(
+            f"{marker}: {c['symbol']} qty {round(parse_float(c['qty'], 0.0), 4)} "
+            f"buy {round(parse_float(c['entry_price'], 0.0), 2)} -> sell {round(parse_float(c['exit_price'], 0.0), 2)}, "
+            f"profit {round(parse_float(c['realized_profit'], 0.0), 2)}"
+        )
+    note = "\n".join([x for x in lines if str(x or "").strip()]).strip()
+    if note != existing:
+        conn.execute(
+            "UPDATE daily_target_plan_pairs SET completion_note = ?, updated_at = ? WHERE id = ?",
+            (note[:1200], now_iso(), pid),
+        )
+
+
 def sync_daily_target_positions(conn, pair_id):
     iid = int(parse_float(pair_id, 0.0))
     row = conn.execute(
@@ -11173,6 +11211,7 @@ def sync_daily_target_positions(conn, pair_id):
     sell_symbol = symbol_upper(row["sell_symbol"])
     if sell_qty > 0 and sell_price > 0 and sell_at and sell_symbol:
         remaining = sell_qty
+        closed_cycles = []
         tax_cfg = get_tax_profile_config(conn)
         total_sell_value = round(sell_price * sell_qty, 2)
         exit_costs = _daily_target_zerodha_delivery_costs(
@@ -11208,6 +11247,8 @@ def sync_daily_target_positions(conn, pair_id):
             else:
                 realized_add = 0.0
             if pos_qty <= (remaining + 1e-9):
+                closed_qty_total = round(pos_closed_qty + close_qty, 4)
+                realized_total = round(pos_realized + realized_add, 2)
                 conn.execute(
                     """
                     UPDATE daily_target_positions
@@ -11215,8 +11256,8 @@ def sync_daily_target_positions(conn, pair_id):
                     WHERE id = ?
                     """,
                     (
-                        round(pos_closed_qty + close_qty, 4),
-                        round(pos_realized + realized_add, 2),
+                        closed_qty_total,
+                        realized_total,
                         iid,
                         round(sell_price, 4),
                         round(pos_qty * sell_price, 2),
@@ -11224,6 +11265,16 @@ def sync_daily_target_positions(conn, pair_id):
                         now_iso(),
                         pos_id,
                     ),
+                )
+                closed_cycles.append(
+                    {
+                        "position_id": pos_id,
+                        "symbol": sell_symbol,
+                        "qty": closed_qty_total,
+                        "entry_price": pos_entry_price,
+                        "exit_price": sell_price,
+                        "realized_profit": realized_total,
+                    }
                 )
                 remaining -= pos_qty
             else:
@@ -11242,6 +11293,7 @@ def sync_daily_target_positions(conn, pair_id):
                     ),
                 )
                 remaining = 0.0
+        _append_daily_target_full_cycle_note(conn, iid, closed_cycles)
 
 
 def _daily_target_virtual_open_positions(conn):
@@ -11848,6 +11900,63 @@ def _daily_target_plan_snapshots(conn, plan_id, limit=60):
     ]
 
 
+def list_daily_target_full_cycles(conn, limit=10):
+    lim = max(1, min(50, int(parse_float(limit, 10))))
+    rows = conn.execute(
+        """
+        SELECT
+          p.id AS position_id,
+          p.symbol,
+          p.initial_qty,
+          p.closed_qty,
+          p.entry_price,
+          p.entry_value,
+          p.entry_at,
+          p.exit_price,
+          p.exit_value,
+          p.exit_at,
+          p.realized_profit,
+          p.source_pair_id,
+          p.exit_pair_id,
+          entry_pair.plan_id AS entry_plan_id,
+          exit_pair.plan_id AS exit_plan_id,
+          COALESCE(exit_pair.completion_note, '') AS completion_note
+        FROM daily_target_positions p
+        LEFT JOIN daily_target_plan_pairs entry_pair ON entry_pair.id = p.source_pair_id
+        LEFT JOIN daily_target_plan_pairs exit_pair ON exit_pair.id = p.exit_pair_id
+        WHERE LOWER(COALESCE(p.status,'')) = 'closed'
+          AND p.exit_pair_id IS NOT NULL
+          AND COALESCE(p.closed_qty,0) > 0
+        ORDER BY COALESCE(p.exit_at, p.updated_at, p.created_at) DESC, p.id DESC
+        LIMIT ?
+        """,
+        (lim,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        qty = round(parse_float(r["closed_qty"], 0.0) or parse_float(r["initial_qty"], 0.0), 4)
+        out.append(
+            {
+                "position_id": int(parse_float(r["position_id"], 0.0)),
+                "symbol": str(r["symbol"] or ""),
+                "qty": qty,
+                "entry_price": round(parse_float(r["entry_price"], 0.0), 4),
+                "entry_value": round(parse_float(r["entry_value"], 0.0), 2),
+                "entry_at": str(r["entry_at"] or ""),
+                "exit_price": round(parse_float(r["exit_price"], 0.0), 4),
+                "exit_value": round(parse_float(r["exit_value"], 0.0), 2),
+                "exit_at": str(r["exit_at"] or ""),
+                "realized_profit": round(parse_float(r["realized_profit"], 0.0), 2),
+                "source_pair_id": None if r["source_pair_id"] is None else int(parse_float(r["source_pair_id"], 0.0)),
+                "exit_pair_id": None if r["exit_pair_id"] is None else int(parse_float(r["exit_pair_id"], 0.0)),
+                "entry_plan_id": None if r["entry_plan_id"] is None else int(parse_float(r["entry_plan_id"], 0.0)),
+                "exit_plan_id": None if r["exit_plan_id"] is None else int(parse_float(r["exit_plan_id"], 0.0)),
+                "comment": str(r["completion_note"] or ""),
+            }
+        )
+    return out
+
+
 def _daily_target_plan_payload(conn, plan_row):
     if not plan_row:
         perf = compute_daily_target_performance(conn)
@@ -11883,6 +11992,7 @@ def _daily_target_plan_payload(conn, plan_row):
             "pairs": [],
             "snapshots": [],
             "performance": perf,
+            "full_cycles": list_daily_target_full_cycles(conn, limit=10),
         }
     plan_id = int(parse_float(plan_row.get("id"), 0.0))
     pair_rows = conn.execute(
@@ -11997,6 +12107,7 @@ def _daily_target_plan_payload(conn, plan_row):
         "pairs": pairs,
         "snapshots": _daily_target_plan_snapshots(conn, plan_id, limit=80),
         "performance": perf,
+        "full_cycles": list_daily_target_full_cycles(conn, limit=10),
     }
 
 

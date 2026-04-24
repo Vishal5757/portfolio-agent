@@ -360,6 +360,7 @@ def run():
             'id="dailyTargetTopN"',
             'id="dailyTargetTable"',
             'id="dailyTargetCompletedTable"',
+            'id="dailyTargetFullCycleTable"',
             'id="dailyTargetSnapshotsTable"',
             'id="dailyTargetHistoryFrom"',
             'id="dailyTargetHistoryTo"',
@@ -370,6 +371,8 @@ def run():
         ):
             expect(token in html, f"daily target ui missing {token}")
         expect("def sync_daily_target_positions(" in py, "daily target position sync helper missing")
+        expect("def list_daily_target_full_cycles(" in py, "daily target full-cycle listing helper missing")
+        expect("_append_daily_target_full_cycle_note" in py, "daily target full-cycle auto-comment helper missing")
         expect("CREATE TABLE IF NOT EXISTS daily_target_positions" in py, "daily target positions table missing")
         expect("def compute_daily_target_performance(" in py, "daily target performance helper missing")
         expect("used_symbols = set()" in py, "daily target disjoint buy/sell symbol guard missing")
@@ -383,6 +386,7 @@ def run():
         expect("date_from" in py and "state_filter" in py, "daily target history backend filters missing")
         expect("live_mtm_basis_value" in py, "daily target net live mtm basis metric missing")
         expect('Net Live P/L' in js, "daily target net live pnl label missing")
+        expect("Full Cycle Complete - Latest 10" in html, "daily target full-cycle table title missing")
         expect("effective_state = state_norm" in py, "daily target effective state auto-upgrade missing")
         expect("def _daily_target_live_pair_metrics(" in py, "daily target live pair metrics helper missing")
         expect("def _daily_target_build_buy_leg(" in py, "daily target buy-leg builder missing")
@@ -655,6 +659,46 @@ def run():
             expect(match is not None and str(match.get("state") or "").lower() == "executed", "daily target pair update failed")
             perf_after = updated.get("performance") or {}
             expect("live_mtm_basis_value" in perf_after, "daily target performance missing net live mtm basis")
+            plan_id = int((updated.get("plan") or {}).get("id") or 0)
+            reverse_pair = {
+                "priority_rank": 99,
+                "sell_symbol": sample.get("buy_symbol"),
+                "sell_qty": sample.get("buy_qty"),
+                "sell_ref_price": float(sample.get("buy_ref_price") or 0) + 10,
+                "sell_trade_value": float(sample.get("buy_qty") or 0) * (float(sample.get("buy_ref_price") or 0) + 10),
+                "sell_target_price": float(sample.get("buy_ref_price") or 0) + 10,
+                "sell_score": 1,
+                "sell_reason": "smoke full cycle exit",
+                "buy_symbol": sample.get("sell_symbol"),
+                "buy_qty": sample.get("sell_qty"),
+                "buy_ref_price": sample.get("sell_ref_price"),
+                "buy_trade_value": sample.get("sell_trade_value"),
+                "buy_target_exit_price": float(sample.get("sell_ref_price") or 0) + 10,
+                "buy_score": 1,
+                "buy_reason": "smoke reverse leg",
+                "expected_profit_value": 10,
+                "rotation_score": 1,
+            }
+            with app.db_connect() as conn:
+                reverse_pair_id = app._insert_daily_target_pair(conn, plan_id, reverse_pair, state="pending")
+                conn.commit()
+            _, cycle_payload = req(
+                "PUT",
+                f"/api/v1/daily-target/pairs/{reverse_pair_id}",
+                {
+                    "state": "sell_done",
+                    "executed_sell_price": reverse_pair["sell_ref_price"],
+                    "executed_sell_at": "2026-04-22",
+                    "executed_buy_price": reverse_pair["buy_ref_price"],
+                    "executed_buy_at": "2026-04-22",
+                    "note": "reverse smoke",
+                },
+                expected=200,
+            )
+            cycles = cycle_payload.get("full_cycles") or []
+            expect(len(cycles) <= 10, "daily target full cycle list not capped to latest 10")
+            expect(cycles and cycles[0].get("symbol") == sample.get("buy_symbol"), "daily target full cycle row missing closed scrip")
+            expect("full cycle complete" in str(cycles[0].get("comment") or "").lower(), "daily target full cycle comment missing")
         _, hist = req("GET", "/api/v1/daily-target/history?limit=50", expected=200)
         expect("items" in hist and "summary" in hist, "daily target history payload incomplete")
         if hist.get("items"):
