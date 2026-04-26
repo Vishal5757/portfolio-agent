@@ -54,24 +54,61 @@ Full-stack local portfolio analytics app:
 
 ## Quick Start
 
-1. Run:
+### Option A — PowerShell launcher (recommended)
+
+Picks the first free port in `8080–8089` and starts the server:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\run-app.ps1
 ```
 
-2. Open:
+The URL is printed on startup (e.g. `http://127.0.0.1:8080`). Open it in your browser.
 
-The script starts on the first free local port from `8080` to `8089` and prints the URL.
+### Option B — Python directly
+
+With the virtual environment activated:
+
+```powershell
+# Windows (activate venv first)
+.\.venv\Scripts\activate
+python app.py --port 8080
+```
+
+```bash
+# Linux / macOS
+source .venv/bin/activate
+python app.py --port 8080
+```
+
+Or without activating the venv:
+
+```powershell
+.\.venv\Scripts\python.exe app.py --port 8080
+```
+
+### First-time setup (install dependencies)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
 
 ## Code Structure
 
 - `app.py`: compatibility entrypoint and API/server orchestration.
-- `portfolio_agent/`: modular package for extracted domains.
-  - `software_performance.py`: software-performance agent config, telemetry, self-heal loop, and improvement-draft logic.
-  - `risk_analysis.py`: risk-analysis agent config, scheduled snapshot engine, and portfolio risk scoring.
-- `web/`: frontend assets.
-- `tools/`: smoke/integration checks.
+- `portfolio_agent/`: modular package for extracted domain logic.
+  - `utils.py`: pure helpers — `parse_float`, `clamp`, `now_iso`, `ist_now`, `parse_bool`, `parse_excel_date`, etc.
+  - `quote_manager.py`: quote-source registry, scoring, ranking, and metrics ingestion.
+  - `tax_utils.py`: India FY bounds, STCG/LTCG bucket helpers, harvest signal scoring, and realised equity tax summary.
+  - `software_performance.py`: runtime health monitoring, self-heal loop, and improvement-draft logic.
+  - `risk_analysis.py`: risk snapshots (volatility, drawdown, VaR/CVaR, HHI concentration).
+- `web/`: frontend assets (`index.html`, `app.js`, `styles.css`).
+- `tools/`: test and utility scripts.
+  - `run-app.ps1`: launches the server on the first free port in 8080–8089.
+  - `full_system_smoke_test.py`: exhaustive integration test (isolated temp DB).
+  - `button_contract_test.py`: UI button binding contract checks.
+  - `cowork.ps1` / `cowork.cmd`: append/tail the shared agent coordination log.
 - `cowork.md`: append-only coordination chat for Codex/Claude handoffs.
 
 ## Codex / Claude Cowork Flow
