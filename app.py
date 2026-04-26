@@ -66,6 +66,18 @@ from portfolio_agent.quote_manager import (
     recompute_quote_source_scores as _mod_recompute_quote_source_scores,
     set_quote_source_enabled as _mod_set_quote_source_enabled,
 )
+from portfolio_agent.tax_utils import (
+    compute_realized_equity_tax_summary as _mod_compute_realized_equity_tax_summary,
+    harvest_action_bias as _mod_harvest_action_bias,
+    harvest_direction_label as _mod_harvest_direction_label,
+    harvest_expected_move_score as _mod_harvest_expected_move_score,
+    harvest_priority_reason as _mod_harvest_priority_reason,
+    harvest_signal_bias as _mod_harvest_signal_bias,
+    harvest_tax_bucket as _mod_harvest_tax_bucket,
+    harvest_tax_bucket_bias as _mod_harvest_tax_bucket_bias,
+    harvest_tax_bucket_rank as _mod_harvest_tax_bucket_rank,
+    india_fy_bounds as _mod_india_fy_bounds,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21517,6 +21529,18 @@ quote_source_score_from_totals  = _mod_quote_source_score_from_totals
 recompute_quote_source_scores   = _mod_recompute_quote_source_scores
 set_quote_source_enabled        = _mod_set_quote_source_enabled
 _quote_corroboration_count      = _mod_quote_corroboration_count
+
+# portfolio_agent.tax_utils -- India FY bounds, tax bucket + harvest helpers
+_india_fy_bounds                    = _mod_india_fy_bounds
+_harvest_tax_bucket                 = _mod_harvest_tax_bucket
+_harvest_tax_bucket_rank            = _mod_harvest_tax_bucket_rank
+_harvest_tax_bucket_bias            = _mod_harvest_tax_bucket_bias
+_harvest_action_bias                = _mod_harvest_action_bias
+_harvest_signal_bias                = _mod_harvest_signal_bias
+_harvest_expected_move_score        = _mod_harvest_expected_move_score
+_harvest_direction_label            = _mod_harvest_direction_label
+_harvest_priority_reason            = _mod_harvest_priority_reason
+compute_realized_equity_tax_summary = _mod_compute_realized_equity_tax_summary
 
 # Module wiring: keep `app.py` compatibility while delegating software-performance
 # agent logic into `portfolio_agent/software_performance.py`.
