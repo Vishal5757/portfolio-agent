@@ -72,6 +72,19 @@ The script starts on the first free local port from `8080` to `8089` and prints 
   - `risk_analysis.py`: risk-analysis agent config, scheduled snapshot engine, and portfolio risk scoring.
 - `web/`: frontend assets.
 - `tools/`: smoke/integration checks.
+- `cowork.md`: append-only coordination chat for Codex/Claude handoffs.
+
+## Codex / Claude Cowork Flow
+
+Use `cowork.md` as the shared chat. Keep notes short: claim work, list files, test result, and next handoff.
+
+```powershell
+.\tools\cowork.ps1 add -Agent Claude -Type claim -Message "Claiming hosted LLM UI polish" -Files "web/app.js, web/index.html" -Next "Codex handles backend tests"
+.\tools\cowork.ps1 tail -Lines 60
+.\tools\cowork.ps1 open
+```
+
+Rules: do not paste long diffs, do not include secrets/API keys, and claim files before editing to avoid overlap.
 
 Refactor direction: continue moving domain logic from `app.py` into `portfolio_agent/` modules (`market`, `strategy`, `intel`, `api`, `storage`) while keeping `app.py` as a thin compatibility shell.
 
