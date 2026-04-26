@@ -43,6 +43,29 @@ from portfolio_agent.risk_analysis import (
     run_risk_analysis_agent_once as _mod_run_risk_analysis_agent_once,
     set_risk_agent_config as _mod_set_risk_agent_config,
 )
+from portfolio_agent.utils import (
+    clamp as _mod_clamp,
+    is_zero_qty_eod_window as _mod_is_zero_qty_eod_window,
+    ist_now as _mod_ist_now,
+    median_value as _mod_median_value,
+    money as _mod_money,
+    now_iso as _mod_now_iso,
+    parse_bool as _mod_parse_bool,
+    parse_excel_date as _mod_parse_excel_date,
+    parse_float as _mod_parse_float,
+    parse_token_list as _mod_parse_token_list,
+)
+from portfolio_agent.quote_manager import (
+    apply_quote_source_metrics as _mod_apply_quote_source_metrics,
+    discovered_quote_sources as _mod_discovered_quote_sources,
+    ensure_quote_source_registry as _mod_ensure_quote_source_registry,
+    get_ranked_quote_sources as _mod_get_ranked_quote_sources,
+    quote_corroboration_count as _mod_quote_corroboration_count,
+    quote_source_ranking as _mod_quote_source_ranking,
+    quote_source_score_from_totals as _mod_quote_source_score_from_totals,
+    recompute_quote_source_scores as _mod_recompute_quote_source_scores,
+    set_quote_source_enabled as _mod_set_quote_source_enabled,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21466,6 +21489,34 @@ def main():
             import_from_excel(str(seed_xlsx))
         serve(args.port)
 
+
+# Module wiring: keep `app.py` compatibility while delegating logic into
+# portfolio_agent sub-modules.  Names listed here shadow the inline
+# definitions above; behaviour is identical — the module versions are the
+# canonical implementations going forward.
+
+# portfolio_agent.utils — pure helpers
+clamp                   = _mod_clamp
+is_zero_qty_eod_window = _mod_is_zero_qty_eod_window
+ist_now = _mod_ist_now
+median_value = _mod_median_value
+money = _mod_money
+now_iso = _mod_now_iso
+parse_bool = _mod_parse_bool
+parse_excel_date = _mod_parse_excel_date
+parse_float = _mod_parse_float
+parse_token_list        = _mod_parse_token_list
+
+# portfolio_agent.quote_manager — source scoring / ranking
+apply_quote_source_metrics      = _mod_apply_quote_source_metrics
+discovered_quote_sources        = _mod_discovered_quote_sources
+ensure_quote_source_registry    = _mod_ensure_quote_source_registry
+get_ranked_quote_sources        = _mod_get_ranked_quote_sources
+quote_source_ranking            = _mod_quote_source_ranking
+quote_source_score_from_totals  = _mod_quote_source_score_from_totals
+recompute_quote_source_scores   = _mod_recompute_quote_source_scores
+set_quote_source_enabled        = _mod_set_quote_source_enabled
+_quote_corroboration_count      = _mod_quote_corroboration_count
 
 # Module wiring: keep `app.py` compatibility while delegating software-performance
 # agent logic into `portfolio_agent/software_performance.py`.
