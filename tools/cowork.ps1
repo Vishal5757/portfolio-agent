@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("add", "read", "open", "tail", "live")]
+    [ValidateSet("add", "read", "open", "tail", "live", "help")]
     [string]$Action = "read",
     [string]$Agent = "Codex",
     [string]$Type = "note",
@@ -16,6 +16,29 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $ChatPath = Join-Path $Root "cowork.md"
 
+function Show-Usage {
+    Write-Output @"
+Cowork chat helper
+
+Usage:
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cowork.ps1 add -Agent Codex -Type progress -Message "Short status" -Files "path1,path2" -Tests "pending" -Next "handoff"
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cowork.ps1 tail -Lines 60 -Follow
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cowork.ps1 live
+
+Shortcut:
+  .\tools\cowork.cmd add -Agent Claude -Type claim -Message "Claiming file"
+  .\tools\cowork.cmd live
+
+Actions:
+  add   Append a structured message.
+  read  Print the full chat.
+  tail  Print the latest lines; add -Follow to stream updates.
+  live  Open a separate PowerShell live viewer.
+  open  Open cowork.md in Notepad.
+  help  Show this help.
+"@
+}
+
 if (!(Test-Path -LiteralPath $ChatPath)) {
     @"
 # Cowork Chat
@@ -29,6 +52,9 @@ function Get-IstStamp {
 }
 
 switch ($Action) {
+    "help" {
+        Show-Usage
+    }
     "add" {
         if ([string]::IsNullOrWhiteSpace($Message)) {
             throw "Message is required for add. Example: tools\cowork.ps1 add -Agent Claude -Type claim -Message 'Claiming UI tests.'"

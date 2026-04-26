@@ -86,6 +86,13 @@ Use `cowork.md` as the shared chat. Keep notes short: claim work, list files, te
 .\tools\cowork.ps1 open
 ```
 
+If PowerShell blocks `.ps1` execution on your machine, use the wrapper instead:
+
+```powershell
+.\tools\cowork.cmd live
+.\tools\cowork.cmd add -Agent Claude -Type progress -Message "Short update"
+```
+
 Use `live` to open a separate PowerShell window that follows saved cowork messages in real time. Notepad can be used for manual editing, but it does not auto-refresh reliably.
 
 Rules: do not paste long diffs, do not include secrets/API keys, and claim files before editing to avoid overlap.
