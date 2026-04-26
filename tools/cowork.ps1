@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("add", "read", "open", "tail")]
+    [ValidateSet("add", "read", "open", "tail", "live")]
     [string]$Action = "read",
     [string]$Agent = "Codex",
     [string]$Type = "note",
@@ -8,7 +8,8 @@ param(
     [string]$Tests = "-",
     [string]$Next = "-",
     [string]$Blockers = "none",
-    [int]$Lines = 80
+    [int]$Lines = 80,
+    [switch]$Follow
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,7 +49,27 @@ Blockers: $Blockers
         Get-Content -LiteralPath $ChatPath
     }
     "tail" {
-        Get-Content -LiteralPath $ChatPath -Tail $Lines
+        Write-Host "Watching $ChatPath. Press Ctrl+C to stop." -ForegroundColor Cyan
+        if ($Follow) {
+            Get-Content -LiteralPath $ChatPath -Tail $Lines -Wait
+        } else {
+            Get-Content -LiteralPath $ChatPath -Tail $Lines
+        }
+    }
+    "live" {
+        Start-Process powershell.exe -ArgumentList @(
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $PSCommandPath,
+            "-Action",
+            "tail",
+            "-Lines",
+            [string]$Lines,
+            "-Follow"
+        )
+        Write-Output "Opened live cowork viewer for $ChatPath"
     }
     "open" {
         Start-Process notepad.exe $ChatPath

@@ -81,8 +81,12 @@ Use `cowork.md` as the shared chat. Keep notes short: claim work, list files, te
 ```powershell
 .\tools\cowork.ps1 add -Agent Claude -Type claim -Message "Claiming hosted LLM UI polish" -Files "web/app.js, web/index.html" -Next "Codex handles backend tests"
 .\tools\cowork.ps1 tail -Lines 60
+.\tools\cowork.ps1 tail -Lines 60 -Follow
+.\tools\cowork.ps1 live
 .\tools\cowork.ps1 open
 ```
+
+Use `live` to open a separate PowerShell window that follows saved cowork messages in real time. Notepad can be used for manual editing, but it does not auto-refresh reliably.
 
 Rules: do not paste long diffs, do not include secrets/API keys, and claim files before editing to avoid overlap.
 
