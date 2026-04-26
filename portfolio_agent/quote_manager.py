@@ -1,4 +1,4 @@
-"""
+﻿"""
 portfolio_agent.quote_manager
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Quote-source registry, scoring, and selection logic extracted from app.py.
@@ -23,7 +23,7 @@ from portfolio_agent.utils import clamp, now_iso, parse_float
 # ---------------------------------------------------------------------------
 
 def _core():
-    import app  # noqa: PLC0415 — intentional late import
+    import app  # noqa: PLC0415 -- intentional late import
     return app
 
 
@@ -32,7 +32,7 @@ def _core():
 # ---------------------------------------------------------------------------
 
 def discovered_quote_sources() -> list:
-    """Return every known quote source name — built-ins plus any discovered
+    """Return every known quote source name -- built-ins plus any discovered
     via ``MarketDataClient.fetch_*_quote`` method names."""
     core = _core()
     sources = list(core.BUILTIN_LIVE_QUOTE_SOURCES)
@@ -119,9 +119,9 @@ def quote_source_score_from_totals(
     total_accuracy_error_pct,
     accuracy_samples,
 ) -> float:
-    """Compute a 0–100 composite score from cumulative stats.
+    """Compute a 0-100 composite score from cumulative stats.
 
-    Formula: ``success_rate × (0.55 × accuracy_score + 0.45 × latency_score)``
+    Formula: ``success_rate * (0.55 * accuracy_score + 0.45 * latency_score)``
 
     * Latency score uses a 1 200 ms half-decay point.
     * Accuracy score uses a 3 % error half-decay point.

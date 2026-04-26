@@ -1,8 +1,8 @@
-"""
+﻿"""
 portfolio_agent.utils
 ~~~~~~~~~~~~~~~~~~~~~
 Pure utility helpers extracted from app.py.  No dependency on the app
-module — safe to import at any point without circular-import risk.
+module -- safe to import at any point without circular-import risk.
 """
 
 import datetime as dt
@@ -28,7 +28,7 @@ def ist_now() -> dt.datetime:
 
 
 def is_zero_qty_eod_window(now_ist=None) -> bool:
-    """True after 15:35 IST — the window where zero-qty quotes are valid."""
+    """True after 15:35 IST -- the window where zero-qty quotes are valid."""
     now_ist = now_ist or ist_now()
     h = int(now_ist.hour)
     m = int(now_ist.minute)
@@ -60,8 +60,8 @@ def parse_float(value, default: float = 0.0) -> float:
             return default
         cleaned = (
             raw.replace(",", "")
-            .replace("₹", "")   # ₹ rupee sign
-            .replace("₹", "")
+            .replace("\u20b9", "")   # INR rupee sign (U+20B9)
+            .replace("\u20a8", "")   # legacy rupee sign (U+20A8)
             .replace("$", "")
             .replace("rs.", "")
             .replace("rs", "")
@@ -70,7 +70,7 @@ def parse_float(value, default: float = 0.0) -> float:
             .replace("+", "")
             .replace("(", "-")
             .replace(")", "")
-            .replace("−", "-")  # minus sign
+            .replace("\u2212", "-")  # Unicode minus sign (U+2212)
             .strip()
         )
         if not cleaned:
@@ -99,8 +99,8 @@ def parse_float(value, default: float = 0.0) -> float:
 
 
 def money(value) -> str:
-    """Format *value* as an INR string, e.g. ₹1,23,456.78."""
-    return f"₹{parse_float(value, 0.0):,.2f}"
+    """Format *value* as an INR currency string, e.g. Rs 1,23,456.78."""
+    return "\u20b9{:,.2f}".format(parse_float(value, 0.0))
 
 
 def median_value(values) -> float:
