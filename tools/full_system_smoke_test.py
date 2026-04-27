@@ -293,6 +293,40 @@ def run():
         )
 
     check("ui_button_binding_contract", ui_button_binding_contract)
+    def modular_extraction_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        init_py = (root / "portfolio_agent" / "__init__.py").read_text(encoding="utf-8")
+        utils_py = (root / "portfolio_agent" / "utils.py").read_text(encoding="utf-8")
+        quote_py = (root / "portfolio_agent" / "quote_manager.py").read_text(encoding="utf-8")
+        expect("from portfolio_agent.utils import" in py, "app.py missing utils module imports")
+        expect("from portfolio_agent.quote_manager import" in py, "app.py missing quote_manager module imports")
+        for left, right in (
+            ("clamp", "_mod_clamp"),
+            ("parse_float", "_mod_parse_float"),
+            ("now_iso", "_mod_now_iso"),
+            ("get_ranked_quote_sources", "_mod_get_ranked_quote_sources"),
+            ("quote_source_ranking", "_mod_quote_source_ranking"),
+            ("_quote_corroboration_count", "_mod_quote_corroboration_count"),
+        ):
+            expect(re.search(rf"^{re.escape(left)}\s*=\s*{re.escape(right)}\s*$", py, re.MULTILINE), f"app.py module wiring missing {left} = {right}")
+        for token in (
+            "def parse_float(",
+            "def parse_excel_date(",
+            "def parse_token_list(",
+            "def is_zero_qty_eod_window(",
+        ):
+            expect(token in utils_py, f"utils module missing {token}")
+        for token in (
+            "def discovered_quote_sources(",
+            "def ensure_quote_source_registry(",
+            "def get_ranked_quote_sources(",
+            "def quote_source_ranking(",
+            "def quote_corroboration_count(",
+        ):
+            expect(token in quote_py, f"quote_manager module missing {token}")
+        expect('"utils"' in init_py and '"quote_manager"' in init_py, "portfolio_agent exports missing extracted modules")
+
+    check("modular_extraction_contract", modular_extraction_contract)
     check("config_get", lambda: req("GET", "/api/v1/config/live", expected=200))
     check(
         "config_put",
