@@ -2825,8 +2825,21 @@ function renderDailyTargetPlan(payload) {
     }
   }
   if ($("dailyTargetPerformance")) {
+    const targetAchieved = !!perf.target_achieved;
+    const targetAchievedBadge = targetAchieved
+      ? `<span class="badge pos" title="MTM capital is at or above the compounded target for today">&#10003; Target On Track</span>`
+      : `<span class="badge neg" title="MTM capital is below the compounded target for today">&#9660; Below Target</span>`;
+    const diffCls = (perf.diff_to_target || 0) >= 0 ? "pos" : "neg";
     $("dailyTargetPerformance").innerHTML = `
+      <div class="perf-target-banner ${targetAchieved ? "achieved" : "missed"}">${targetAchievedBadge}&nbsp;&nbsp;
+        <span title="Seed x (1 + Target%)^market_working_days_since_start. Uses NSE trading calendar.">Target Capital to Date (${Number(perf.working_days_elapsed || 0)}d): ${money(perf.target_capital_to_date)}</span>&nbsp;&nbsp;
+        <span class="${diffCls}" title="MTM Capital minus Target Capital to Date">Diff vs Target: ${money(perf.diff_to_target)}</span>
+      </div>
       <div class="metric">Starting Capital: ${money(perf.starting_capital)}</div>
+      <div class="metric">Strategy Start: ${escapeHtml(String(perf.plan_start_date || "-"))}</div>
+      <div class="metric">Market Days Elapsed: ${Number(perf.working_days_elapsed || 0)}</div>
+      <div class="metric" title="Seed x (1 + Target%)^market_working_days. Perfect daily compounding benchmark.">Target Capital to Date: ${money(perf.target_capital_to_date)}</div>
+      <div class="metric ${diffCls}" title="How far ahead (green) or behind (red) the MTM capital is vs ideal compounding">Diff vs Target: ${money(perf.diff_to_target)}</div>
       <div class="metric pos" title="Starting Capital + all realized profits to date">Compounded Capital: ${money(perf.realized_compounded_capital)}</div>
       <div class="metric ${clsBySign(perf.realized_profit_value)}">Realized Profit: ${money(perf.realized_profit_value)}</div>
       <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Return %: ${pct(perf.realized_profit_pct)}</div>

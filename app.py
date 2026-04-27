@@ -45,6 +45,7 @@ from portfolio_agent.risk_analysis import (
 )
 from portfolio_agent.utils import (
     clamp as _mod_clamp,
+    count_market_working_days as _mod_count_market_working_days,
     is_zero_qty_eod_window as _mod_is_zero_qty_eod_window,
     ist_now as _mod_ist_now,
     median_value as _mod_median_value,
@@ -11987,8 +11988,15 @@ def compute_daily_target_performance(conn):
             "latest_symbol": "",
             "latest_trade_date": "",
             "suggested_next_seed_capital": 10000.0,
+            "plan_start_date": "",
+            "working_days_elapsed": 0,
+            "target_capital_to_date": 10000.0,
+            "diff_to_target": 0.0,
+            "target_achieved": False,
         }
     starting_capital = round(parse_float(rows[0]["seed_capital"], 10000.0), 2)
+    plan_start_date = str(rows[0]["plan_created_at"] or "")[:10]
+    target_profit_pct_for_compounding = round(parse_float(rows[-1]["target_profit_pct"], 1.0), 4)
     cumulative_sell_value = 0.0
     cumulative_buy_value = 0.0
     executed_rotation_count = 0
@@ -12052,6 +12060,12 @@ def compute_daily_target_performance(conn):
         latest_balance = realized_compounded_capital
     compounded_return_value = round(latest_balance - starting_capital, 2)
     compounded_return_pct = round((compounded_return_value / starting_capital) * 100.0, 2) if starting_capital > 0 else 0.0
+    today_str = ist_now().date().isoformat()
+    working_days_elapsed = count_market_working_days(plan_start_date, today_str) if plan_start_date else 0
+    daily_rate = clamp(target_profit_pct_for_compounding / 100.0, 0.0, 1.0)
+    target_capital_to_date = round(starting_capital * ((1.0 + daily_rate) ** working_days_elapsed), 2) if working_days_elapsed > 0 else starting_capital
+    diff_to_target = round(round(latest_balance, 2) - target_capital_to_date, 2)
+    target_achieved = diff_to_target >= 0.0
     return {
         "starting_capital": round(starting_capital, 2),
         "current_compounded_capital": round(latest_balance, 2),
@@ -12070,6 +12084,12 @@ def compute_daily_target_performance(conn):
         "latest_symbol": latest_symbol,
         "latest_trade_date": latest_trade_date,
         "suggested_next_seed_capital": realized_compounded_capital,
+        "plan_start_date": plan_start_date,
+        "working_days_elapsed": working_days_elapsed,
+        "target_capital_to_date": target_capital_to_date,
+        "diff_to_target": diff_to_target,
+        "target_achieved": target_achieved,
+        "target_profit_pct": round(target_profit_pct_for_compounding, 4),
     }
 
 
@@ -21509,6 +21529,7 @@ def main():
 
 # portfolio_agent.utils — pure helpers
 clamp                   = _mod_clamp
+count_market_working_days = _mod_count_market_working_days
 is_zero_qty_eod_window = _mod_is_zero_qty_eod_window
 ist_now = _mod_ist_now
 median_value = _mod_median_value

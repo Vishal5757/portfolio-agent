@@ -163,6 +163,56 @@ def parse_token_list(value, default=None) -> list:
 # Date helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Market calendar helpers
+# ---------------------------------------------------------------------------
+
+# NSE equity market holidays -- weekday-only dates that the exchange is closed.
+# Weekends are excluded automatically; only add dates that fall Mon-Fri.
+_NSE_HOLIDAYS = frozenset({
+    # 2024
+    "2024-01-26", "2024-03-25", "2024-04-14", "2024-04-17",
+    "2024-04-21", "2024-05-23", "2024-06-17", "2024-07-17",
+    "2024-08-15", "2024-10-02", "2024-10-14", "2024-11-15",
+    "2024-11-20",
+    # 2025
+    "2025-02-26", "2025-03-14", "2025-03-31", "2025-04-10",
+    "2025-04-14", "2025-04-18", "2025-05-01", "2025-08-15",
+    "2025-08-27", "2025-10-02", "2025-10-22", "2025-10-28",
+    "2025-11-05", "2025-12-25",
+    # 2026
+    "2026-01-26", "2026-03-20", "2026-04-02", "2026-04-03",
+    "2026-04-14", "2026-04-20", "2026-05-01", "2026-07-06",
+    "2026-08-15", "2026-09-16", "2026-10-02", "2026-10-19",
+    "2026-11-06", "2026-11-25", "2026-12-25",
+})
+
+
+def count_market_working_days(from_date, to_date) -> int:
+    """Count NSE equity market trading days between *from_date* and *to_date* (inclusive).
+
+    Excludes weekends and known NSE trading holidays.
+    Accepts ``datetime.date`` objects or ISO-8601 strings.  Returns 0 on bad input.
+    """
+    try:
+        if isinstance(from_date, str):
+            from_date = dt.date.fromisoformat(from_date[:10])
+        if isinstance(to_date, str):
+            to_date = dt.date.fromisoformat(to_date[:10])
+        if not from_date or not to_date or from_date > to_date:
+            return 0
+        count = 0
+        current = from_date
+        one_day = dt.timedelta(days=1)
+        while current <= to_date:
+            if current.weekday() < 5 and current.isoformat() not in _NSE_HOLIDAYS:
+                count += 1
+            current += one_day
+        return count
+    except Exception:
+        return 0
+
+
 def parse_excel_date(value):
     """Coerce *value* to a ``datetime.date``, or return None on failure.
 

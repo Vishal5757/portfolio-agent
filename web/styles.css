@@ -725,3 +725,42 @@ td .btn {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.6; }
 }
+
+/* Daily target compounding banner */
+.perf-target-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.perf-target-banner.achieved {
+  background: rgba(15,138,75,0.10);
+  border: 1.5px solid var(--good);
+  color: var(--good);
+}
+.perf-target-banner.missed {
+  background: rgba(191,47,31,0.08);
+  border: 1.5px solid var(--bad);
+  color: var(--bad);
+}
+.badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.badge.pos {
+  background: var(--good);
+  color: #fff;
+}
+.badge.neg {
+  background: var(--bad);
+  color: #fff;
+}
