@@ -1,3 +1,7 @@
+param(
+    [switch]$NoBrowser
+)
+
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -25,5 +29,14 @@ if ($Port -ge 8090) {
     throw "No free local port found in 8080-8089."
 }
 
-Write-Host "Starting Portfolio Agent on http://127.0.0.1:$Port"
+$Url = "http://127.0.0.1:$Port"
+Write-Host "Starting Portfolio Agent on $Url"
+if (-not $NoBrowser) {
+    Start-Job -ScriptBlock {
+        param([string]$TargetUrl)
+        Start-Sleep -Seconds 2
+        Start-Process $TargetUrl
+    } -ArgumentList $Url | Out-Null
+    Write-Host "Browser will open automatically. Keep this window open while using the app."
+}
 & $Python (Join-Path $Root "app.py") --port $Port

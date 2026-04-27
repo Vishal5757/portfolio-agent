@@ -1,4 +1,4 @@
-# Portfolio Agent
+﻿# Portfolio Agent
 
 Full-stack local portfolio analytics app:
 
@@ -54,17 +54,31 @@ Full-stack local portfolio analytics app:
 
 ## Quick Start
 
-### Option A — PowerShell launcher (recommended)
+### Option A - One-click Windows launcher
 
-Picks the first free port in `8080–8089` and starts the server:
+Double-click this file from File Explorer:
+
+```text
+Start Portfolio Agent.cmd
+```
+
+It picks the first free port in `8080-8089`, starts the server, and opens the browser automatically. Keep the command window open while using the app.
+
+### Option B - PowerShell launcher
+
+Picks the first free port in `8080-8089` and starts the server:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\run-app.ps1
 ```
 
-The URL is printed on startup (e.g. `http://127.0.0.1:8080`). Open it in your browser.
+The URL is printed on startup (e.g. `http://127.0.0.1:8080`) and opens automatically. To suppress browser auto-open:
 
-### Option B — Python directly
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\run-app.ps1 -NoBrowser
+```
+
+### Option C - Python directly
 
 With the virtual environment activated:
 
@@ -98,14 +112,14 @@ pip install -r requirements.txt
 
 - `app.py`: compatibility entrypoint and API/server orchestration.
 - `portfolio_agent/`: modular package for extracted domain logic.
-  - `utils.py`: pure helpers — `parse_float`, `clamp`, `now_iso`, `ist_now`, `parse_bool`, `parse_excel_date`, etc.
+  - `utils.py`: pure helpers â€” `parse_float`, `clamp`, `now_iso`, `ist_now`, `parse_bool`, `parse_excel_date`, etc.
   - `quote_manager.py`: quote-source registry, scoring, ranking, and metrics ingestion.
   - `tax_utils.py`: India FY bounds, STCG/LTCG bucket helpers, harvest signal scoring, and realised equity tax summary.
   - `software_performance.py`: runtime health monitoring, self-heal loop, and improvement-draft logic.
   - `risk_analysis.py`: risk snapshots (volatility, drawdown, VaR/CVaR, HHI concentration).
 - `web/`: frontend assets (`index.html`, `app.js`, `styles.css`).
 - `tools/`: test and utility scripts.
-  - `run-app.ps1`: launches the server on the first free port in 8080–8089.
+  - `run-app.ps1`: launches the server on the first free port in 8080â€“8089.
   - `full_system_smoke_test.py`: exhaustive integration test (isolated temp DB).
   - `button_contract_test.py`: UI button binding contract checks.
   - `cowork.ps1` / `cowork.cmd`: append/tail the shared agent coordination log.
