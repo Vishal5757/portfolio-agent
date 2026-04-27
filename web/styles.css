@@ -248,6 +248,10 @@ textarea {
   background: #435a66;
 }
 
+.btn.danger {
+  background: var(--bad);
+}
+
 .btn:hover {
   filter: brightness(1.07);
 }

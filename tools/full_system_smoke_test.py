@@ -293,6 +293,21 @@ def run():
         )
 
     check("ui_button_binding_contract", ui_button_binding_contract)
+    def app_exit_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        js = (root / "web" / "app.js").read_text(encoding="utf-8")
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+        expect('id="exitAppBtn"' in html, "exit button missing in header")
+        expect("async function exitApp()" in js, "exit app handler missing")
+        expect('registerButton("exitAppBtn", exitApp' in js, "exit button is not registered")
+        expect('"/api/v1/system/shutdown"' in js, "exit button does not call shutdown endpoint")
+        expect('if parsed.path == "/api/v1/system/shutdown":' in py, "shutdown endpoint missing")
+        expect("self.server.shutdown" in py, "shutdown endpoint does not stop server")
+        expect("server.server_close()" in py, "server socket close missing after shutdown")
+        expect(".btn.danger" in css, "danger button style missing")
+
+    check("app_exit_contract", app_exit_contract)
     def modular_extraction_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         init_py = (root / "portfolio_agent" / "__init__.py").read_text(encoding="utf-8")

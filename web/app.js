@@ -224,6 +224,23 @@ function verifyButtonBindings() {
   return missing;
 }
 
+async function exitApp() {
+  const ok = window.confirm("Exit Portfolio Agent and stop the local server?");
+  if (!ok) return;
+  const btn = $("exitAppBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Exiting...";
+  }
+  await api("/api/v1/system/shutdown", { method: "POST", body: JSON.stringify({}) });
+  showUiNotification(
+    "success",
+    "Portfolio Agent is shutting down",
+    "The local server has been asked to stop. You can close this browser tab after the command window exits.",
+    { code: "APP_SHUTDOWN_REQUESTED", timeoutMs: 12000 }
+  );
+}
+
 function numOrNull(v) {
   if (v === null || typeof v === "undefined") return null;
   const n = Number(v);
@@ -5342,6 +5359,7 @@ function bindEvents() {
   registerButton("tenantSwitchBtn", switchTenant, { actionName: "Switch Tenant", errorCode: "TENANT_SWITCH_FAILED" });
   registerButton("tenantCreateBtn", createTenantFromInput, { actionName: "Create Tenant", errorCode: "TENANT_CREATE_FAILED" });
   registerButton("refreshPricesBtn", refreshPricesNow, { actionName: "Refresh Live Prices", errorCode: "PRICES_REFRESH_FAILED" });
+  registerButton("exitAppBtn", exitApp, { actionName: "Exit App", errorCode: "APP_EXIT_FAILED" });
   registerButton("uploadTradebookBtn", uploadTradebook, { actionName: "Upload Tradebook", errorCode: "TRADEBOOK_UPLOAD_FAILED" });
   registerButton("uploadCashflowBtn", uploadCashflow, { actionName: "Upload Cashflow", errorCode: "CASHFLOW_UPLOAD_FAILED" });
   registerButton("uploadDividendBtn", uploadDividends, { actionName: "Upload Dividends", errorCode: "DIVIDEND_UPLOAD_FAILED" });

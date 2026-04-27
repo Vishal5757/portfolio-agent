@@ -19735,6 +19735,11 @@ class AppHandler(SimpleHTTPRequestHandler):
         json_response(self, {"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
     def handle_api_post(self, parsed):
+        if parsed.path == "/api/v1/system/shutdown":
+            json_response(self, {"ok": True, "message": "shutdown_requested"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+
         if parsed.path == "/api/v1/tenants":
             body = self._read_json()
             key = body.get("key")
@@ -21488,6 +21493,7 @@ def serve(port):
         server.serve_forever()
     finally:
         stop_event.set()
+        server.server_close()
 
 
 def main():
