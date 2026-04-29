@@ -12235,12 +12235,11 @@ def compute_daily_target_performance(conn):
         """
     ).fetchall()
     realized_profit_value = round(sum(parse_float(r["realized_profit"], 0.0) for r in pos_rows), 2)
-    realized_compounded_capital = round(starting_capital + realized_profit_value, 2)
     # Recompute true net realized for closed positions: both buy+sell charges + STCG tax.
     # realized_profit as stored deducts sell charges only; buy charges are not captured at entry.
     closed_pos_rows = conn.execute(
         """
-        SELECT entry_value, exit_value
+        SELECT entry_value, exit_value, cycle_type
         FROM daily_target_positions
         WHERE LOWER(status) = 'closed'
           AND entry_value > 0 AND exit_value > 0
@@ -12257,13 +12256,21 @@ def compute_daily_target_performance(conn):
         xv = parse_float(cp["exit_value"], 0.0)
         if ev <= 0 or xv <= 0:
             continue
-        gross = xv - ev
-        bc = _daily_target_zerodha_delivery_costs(ev, exchange="NSE", side="BUY", include_dp_on_sell=False, tax_cfg=_tax_cfg_r)
-        sc = _daily_target_zerodha_delivery_costs(xv, exchange="NSE", side="SELL", include_dp_on_sell=True, tax_cfg=_tax_cfg_r)
+        cycle_type = str(cp["cycle_type"] or "buy_sell").strip().lower()
+        if cycle_type == "sell_buyback":
+            gross = ev - xv
+            sc = _daily_target_zerodha_delivery_costs(ev, exchange="NSE", side="SELL", include_dp_on_sell=True, tax_cfg=_tax_cfg_r)
+            bc = _daily_target_zerodha_delivery_costs(xv, exchange="NSE", side="BUY", include_dp_on_sell=False, tax_cfg=_tax_cfg_r)
+            taxable = 0.0
+        else:
+            gross = xv - ev
+            bc = _daily_target_zerodha_delivery_costs(ev, exchange="NSE", side="BUY", include_dp_on_sell=False, tax_cfg=_tax_cfg_r)
+            sc = _daily_target_zerodha_delivery_costs(xv, exchange="NSE", side="SELL", include_dp_on_sell=True, tax_cfg=_tax_cfg_r)
+            taxable = None
         buy_c = parse_float(bc.get("total"), 0.0)
         sell_c = parse_float(sc.get("total"), 0.0)
         net_before_tax = gross - buy_c - sell_c
-        tax = round(max(0.0, net_before_tax) * _stcg_rate, 2)
+        tax = round(max(0.0, net_before_tax if taxable is None else taxable) * _stcg_rate, 2)
         _true_buy_charges += buy_c
         _true_sell_charges += sell_c
         _true_tax_est += tax
@@ -12272,6 +12279,9 @@ def compute_daily_target_performance(conn):
     true_realized_sell_charges = round(_true_sell_charges, 2)
     true_realized_tax_est = round(_true_tax_est, 2)
     true_net_realized_profit = round(_true_net_realized, 2)
+    # Future trade sizing must use take-home realized profit, not the display-only
+    # raw realized value. This keeps compounding decisions aligned to charges/tax.
+    realized_compounded_capital = round(starting_capital + true_net_realized_profit, 2)
     open_positions = conn.execute(
         """
         SELECT symbol, qty, entry_value
@@ -12296,7 +12306,6 @@ def compute_daily_target_performance(conn):
             current_value = round(qty * px, 2) if px > 0 and qty > 0 else round(parse_float(pos["entry_value"], 0.0), 2)
             entry_value = round(parse_float(pos["entry_value"], 0.0), 2)
             gross_pnl = round(current_value - entry_value, 2)
-            latest_balance += gross_pnl
             live_mtm_pnl += gross_pnl
             total_entry_value += entry_value
             if px > 0 and qty > 0:
@@ -12313,9 +12322,12 @@ def compute_daily_target_performance(conn):
                 pos_tax = round(parse_float(sell_tax.get("tax_drag"), 0.0), 2)
                 live_mtm_est_charges += pos_charges
                 live_mtm_est_tax += pos_tax
-                net_live_pnl_est += round(gross_pnl - pos_charges - pos_tax, 2)
+                pos_net_pnl = round(gross_pnl - pos_charges - pos_tax, 2)
+                net_live_pnl_est += pos_net_pnl
+                latest_balance += pos_net_pnl
             else:
                 net_live_pnl_est += gross_pnl
+                latest_balance += gross_pnl
         live_mtm_pnl = round(live_mtm_pnl, 2)
         live_mtm_basis_value = round(total_entry_value, 2)
         live_mtm_return_pct = round((live_mtm_pnl / total_entry_value) * 100.0, 2) if total_entry_value > 0 else 0.0

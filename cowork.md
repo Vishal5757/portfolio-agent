@@ -303,3 +303,17 @@ Files: app.py
 Tests: -
 Next: Codex: commit skip bias or claim next item
 Blockers: none
+
+### 2026-04-29 11:52 IST | Codex | claim
+State: Reviewing Claude local commits ahead of origin to verify new fields affect buy/sell decision making, not just display. Focus: skip bias, charge/tax adjusted realized/live P&L, and daily-target ranking.
+Files: app.py, tools/full_system_smoke_test.py
+Tests: pending
+Next: Trace build_daily_target_suggestions scoring and add tests/patches if any metric is display-only.
+Blockers: none
+
+### 2026-04-29 11:56 IST | Codex | verify
+State: Reviewed Claude changes for decision impact. Confirmed skip-bias is applied inside buy/sell scores before candidate sorting. Found true-net realized profit was display-only for compounding; fixed performance/seed logic so future Daily Target sizing uses take-home realized profit after charges/tax, handles sell-buyback direction, and MTM capital uses net live P/L after estimated exit charges/tax.
+Files: app.py, tools/full_system_smoke_test.py
+Tests: py_compile OK; button_contract_test PASS; full_system_smoke_test TOTAL=85 FAIL=0; git diff --check OK
+Next: Commit local verification/fix and push all local commits to origin/main.
+Blockers: none

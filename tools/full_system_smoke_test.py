@@ -467,6 +467,11 @@ def run():
         expect("date_from" in py and "state_filter" in py, "daily target history backend filters missing")
         expect("live_mtm_basis_value" in py, "daily target net live mtm basis metric missing")
         expect('Net Live P/L' in js, "daily target net live pnl label missing")
+        expect("true_net_realized_profit" in py and "suggested_next_seed_capital\": realized_compounded_capital" in py, "true net realized profit must drive next-day seed")
+        expect("cycle_type == \"sell_buyback\"" in py, "true net realized profit must handle sell-buyback direction")
+        expect("def _daily_target_skip_bias_map(" in py, "daily target skip-bias helper missing")
+        expect("+ parse_float(skip_bias.get(\"sell_penalty\"), 0.0)" in py, "skip sell penalty is not applied to sell score")
+        expect("+ parse_float(skip_bias.get(\"buy_penalty\"), 0.0)" in py, "skip buy penalty is not applied to buy score")
         expect("Full Cycle Complete - Latest 10" in html, "daily target full-cycle table title missing")
         expect("effective_state = state_norm" in py, "daily target effective state auto-upgrade missing")
         expect("def _daily_target_live_pair_metrics(" in py, "daily target live pair metrics helper missing")
@@ -915,6 +920,80 @@ def run():
         expect(any(abs(v) <= 0.01 for v in relief_by_symbol.values()), f"second pair should have near-zero relief after pool depletion: {relief_by_symbol}")
 
     check("daily_target_batch_gain_pool", daily_target_batch_gain_pool_runtime)
+    def daily_target_true_net_compounding_runtime():
+        with app.db_connect() as conn:
+            for table in (
+                "daily_target_positions",
+                "daily_target_pair_snapshots",
+                "daily_target_plan_pairs",
+                "daily_target_plans",
+            ):
+                conn.execute(f"DELETE FROM {table}")
+            ts = "2026-04-20T09:15:00+05:30"
+            conn.execute(
+                """
+                INSERT INTO daily_target_plans(seed_capital, target_profit_pct, target_profit_value, top_n, status, created_at, updated_at)
+                VALUES (10000, 1, 100, 2, 'active', ?, ?)
+                """,
+                (ts, ts),
+            )
+            plan_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            pair = {
+                "priority_rank": 1,
+                "sell_symbol": "SMKNETA",
+                "sell_qty": 10,
+                "sell_ref_price": 1100,
+                "sell_trade_value": 11000,
+                "sell_target_price": 1100,
+                "sell_score": 10,
+                "sell_reason": "true net smoke sell",
+                "buy_symbol": "SMKNETB",
+                "buy_qty": 10,
+                "buy_ref_price": 1000,
+                "buy_trade_value": 10000,
+                "buy_target_exit_price": 1120,
+                "buy_score": 10,
+                "buy_reason": "true net smoke buy",
+                "expected_profit_value": 100,
+                "rotation_score": 20,
+            }
+            pair_id = app._insert_daily_target_pair(conn, plan_id, pair, state="executed")
+            conn.execute(
+                "UPDATE daily_target_plan_pairs SET executed_sell_price = 1100, executed_sell_at = '2026-04-21', executed_buy_price = 1000, executed_buy_at = '2026-04-20' WHERE id = ?",
+                (pair_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_target_positions(
+                  source_pair_id, symbol, qty, initial_qty, closed_qty, entry_price, entry_value,
+                  realized_profit, entry_at, exit_pair_id, exit_price, exit_value, exit_at,
+                  status, cycle_type, created_at, updated_at
+                ) VALUES (?, 'SMKNETB', 0, 10, 10, 1000, 10000, 1000, '2026-04-20', ?, 1100, 11000, '2026-04-21', 'closed', 'buy_sell', ?, ?)
+                """,
+                (pair_id, pair_id, ts, ts),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_target_positions(
+                  source_pair_id, symbol, qty, initial_qty, closed_qty, entry_price, entry_value,
+                  realized_profit, entry_at, exit_pair_id, exit_price, exit_value, exit_at,
+                  status, cycle_type, created_at, updated_at
+                ) VALUES (?, 'SMKNETC', 0, 5, 5, 1000, 5000, 500, '2026-04-20', ?, 900, 4500, '2026-04-21', 'closed', 'sell_buyback', ?, ?)
+                """,
+                (pair_id, pair_id, ts, ts),
+            )
+            conn.commit()
+            perf = app.compute_daily_target_performance(conn)
+        raw = round(float(perf.get("realized_profit_value") or 0.0), 2)
+        true_net = round(float(perf.get("true_net_realized_profit") or 0.0), 2)
+        suggested = round(float(perf.get("suggested_next_seed_capital") or 0.0), 2)
+        realized_capital = round(float(perf.get("realized_compounded_capital") or 0.0), 2)
+        expect(raw == 1500.0, f"smoke raw realized setup unexpected: {perf}")
+        expect(0.0 < true_net < raw, f"true net realized should deduct charges/tax and handle sell-buyback direction: {perf}")
+        expect(abs(suggested - (10000.0 + true_net)) < 0.01, f"next seed is not driven by true net realized: {perf}")
+        expect(abs(realized_capital - suggested) < 0.01, f"realized compounded capital differs from decision seed: {perf}")
+
+    check("daily_target_true_net_compounding", daily_target_true_net_compounding_runtime)
     def attention_console_runtime():
         _, out = req("GET", "/api/v1/attention", expected=200)
         summary = out.get("summary") or {}
