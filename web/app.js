@@ -2865,8 +2865,12 @@ function renderDailyTargetPlan(payload) {
       <div class="metric" title="Seed x (1 + Target%)^market_working_days. Perfect daily compounding benchmark.">Target Capital to Date: ${money(perf.target_capital_to_date)}</div>
       <div class="metric ${diffCls}" title="How far ahead (green) or behind (red) the MTM capital is vs ideal compounding">Diff vs Target: ${money(perf.diff_to_target)}</div>
       <div class="metric pos" title="Starting Capital + all realized profits to date">Compounded Capital: ${money(perf.realized_compounded_capital)}</div>
-      <div class="metric ${clsBySign(perf.realized_profit_value)}">Realized Profit: ${money(perf.realized_profit_value)}</div>
+      <div class="metric ${clsBySign(perf.realized_profit_value)}" title="Gross realized profit (raw exit_value − entry_value, pre-charges, pre-tax)">Realized Profit (gross): ${money(perf.realized_profit_value)}</div>
       <div class="metric ${clsBySign(perf.realized_profit_pct)}">Realized Return %: ${pct(perf.realized_profit_pct)}</div>
+      <div class="metric neg" title="Zerodha delivery charges paid on buy side of all closed positions (STT, txn, SEBI, GST)">Realized Buy Charges: ${money(perf.true_realized_buy_charges)}</div>
+      <div class="metric neg" title="Zerodha delivery charges paid on sell side of all closed positions (STT, txn, SEBI, GST, DP)">Realized Sell Charges: ${money(perf.true_realized_sell_charges)}</div>
+      <div class="metric neg" title="Estimated STCG tax on net gain of all closed positions">Realized Tax Est. (STCG): ${money(perf.true_realized_tax_est)}</div>
+      <div class="metric ${clsBySign(perf.true_net_realized_profit)}" title="Realized profit after both buy+sell charges and STCG tax — true take-home from completed trades">True Net Realized: ${money(perf.true_net_realized_profit)}</div>
       <div class="metric">MTM Capital (incl. open): ${money(perf.current_compounded_capital)}</div>
       <div class="metric ${clsBySign(perf.compounded_return_value)}">Total Strategy P/L: ${money(perf.compounded_return_value)}</div>
       <div class="metric ${clsBySign(perf.compounded_return_pct)}">Total Strategy Return %: ${pct(perf.compounded_return_pct)}</div>
