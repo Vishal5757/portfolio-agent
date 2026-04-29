@@ -2789,6 +2789,7 @@ function renderDailyTargetPlan(payload) {
   const completedPairs = pairs.filter((r) => isClosedDailyTargetState(r?.state));
   const snapshots = Array.isArray(p.snapshots) ? p.snapshots : [];
   const fullCycles = Array.isArray(p.full_cycles) ? p.full_cycles.slice(0, 10) : [];
+  const pendingBuybacks = Array.isArray(p.pending_buybacks) ? p.pending_buybacks.slice(0, 25) : [];
   const llmReview = p.llm_review || null;
   state.dailyTargetPlanRaw = p;
   if ($("dailyTargetSummary")) {
@@ -2813,6 +2814,7 @@ function renderDailyTargetPlan(payload) {
       <div class="metric">Pending: ${Number(summary.pending_pairs || 0)}</div>
       <div class="metric">Sell Done: ${Number(summary.sell_done_pairs || 0)}</div>
       <div class="metric">Buy Done: ${Number(summary.buy_done_pairs || 0)}</div>
+      <div class="metric">Pending Buybacks: ${Number(summary.pending_buybacks || pendingBuybacks.length || 0)}</div>
       <div class="metric">Executed: ${Number(summary.executed_pairs || 0)}</div>
       <div class="metric">Skipped: ${Number(summary.skipped_pairs || 0)}</div>
       <div class="metric">Replaced: ${Number(summary.replaced_pairs || 0)}</div>
@@ -2895,6 +2897,25 @@ function renderDailyTargetPlan(payload) {
           )
           .join("")
       : '<tr><td colspan="10">No full cycle completed yet.</td></tr>';
+  }
+  const pendingBuybackBody = $("dailyTargetPendingBuybackTable")?.querySelector("tbody");
+  if (pendingBuybackBody) {
+    pendingBuybackBody.innerHTML = pendingBuybacks.length
+      ? pendingBuybacks
+          .map(
+            (r) => `
+              <tr>
+                <td>${escapeHtml(String(r.sold_at || "-"))}</td>
+                <td>${escapeHtml(String(r.symbol || ""))}</td>
+                <td>${money(r.qty)}</td>
+                <td>${money(r.sold_at_price)}</td>
+                <td>${money(r.sold_value)}</td>
+                <td>#${Number(r.source_pair_id || 0)}</td>
+                <td class="reason-cell">${escapeHtml(`Sell score ${Number(r.sell_score || 0).toFixed(2)} | Buy score ${Number(r.buy_score || 0).toFixed(2)} | ${r.sell_reason || r.buy_reason || "-"}`)}</td>
+              </tr>`
+          )
+          .join("")
+      : '<tr><td colspan="7">No sold scrip is waiting for a later buyback.</td></tr>';
   }
   const body = $("dailyTargetTable")?.querySelector("tbody");
   if (body) {
@@ -3755,7 +3776,7 @@ function hostedLlmErrorHint(provider, err) {
   }
   if (e.includes("auth_or_access_403") || e.includes("403")) {
     return p === "huggingface"
-      ? "Hint: Hugging Face token/model access is blocked. Use a token with Inference Providers access or choose a served model/provider."
+      ? "Hint: HF token invalid or missing READ scope. Go to hf.co/settings/tokens, create a new Read token, and paste it here. No PRO subscription needed."
       : "Hint: access forbidden. Check API key and selected model.";
   }
   if (e.includes("auth_or_access_401") || e.includes("401")) return "Hint: API key/token was rejected.";

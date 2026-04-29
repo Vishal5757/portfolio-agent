@@ -308,6 +308,16 @@ def run():
         expect(".btn.danger" in css, "danger button style missing")
 
     check("app_exit_contract", app_exit_contract)
+    def local_only_server_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        js = (root / "web" / "app.js").read_text(encoding="utf-8")
+        expect('ThreadingHTTPServer(("127.0.0.1", port), AppHandler)' in py, "server must bind to localhost only")
+        expect('ThreadingHTTPServer(("0.0.0.0", port), AppHandler)' not in py, "server must not bind all interfaces")
+        expect("VIEW_TOKEN_HEADER" not in py and "view_token" not in py.lower(), "removed view-token sharing code still present")
+        expect("--cert" not in py and "--key" not in py, "TLS share CLI flags should not be present")
+        expect("_urlParams" not in js, "unused share-token URL parsing remains in UI")
+
+    check("local_only_server_contract", local_only_server_contract)
     def sqlite_lock_resilience_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         expect("SQLITE_TIMEOUT_SEC = 30" in py, "SQLite timeout constant missing")
@@ -426,6 +436,7 @@ def run():
             'id="dailyTargetTable"',
             'id="dailyTargetCompletedTable"',
             'id="dailyTargetFullCycleTable"',
+            'id="dailyTargetPendingBuybackTable"',
             'id="dailyTargetSnapshotsTable"',
             'id="dailyTargetHistoryFrom"',
             'id="dailyTargetHistoryTo"',
@@ -438,6 +449,11 @@ def run():
         expect("def sync_daily_target_positions(" in py, "daily target position sync helper missing")
         expect("def list_daily_target_full_cycles(" in py, "daily target full-cycle listing helper missing")
         expect("_append_daily_target_full_cycle_note" in py, "daily target full-cycle auto-comment helper missing")
+        expect("pending_buyback" in py and "sell_buyback" in py and "cycle_type" in py, "daily target buyback cycle tracking missing")
+        expect("def list_daily_target_pending_buybacks(" in py, "daily target pending buyback listing helper missing")
+        expect('"pending_buybacks": list_daily_target_pending_buybacks(conn)' in py or '"pending_buybacks": pending_buybacks' in py, "daily target pending buybacks not exposed in payload")
+        expect("dailyTargetPendingBuybackTable" in js, "daily target pending buyback renderer missing")
+        expect("_append_daily_target_buyback_cycle_note" in py, "daily target buyback-cycle note helper missing")
         expect("CREATE TABLE IF NOT EXISTS daily_target_positions" in py, "daily target positions table missing")
         expect("def compute_daily_target_performance(" in py, "daily target performance helper missing")
         expect("used_symbols = set()" in py, "daily target disjoint buy/sell symbol guard missing")
@@ -728,6 +744,7 @@ def run():
         for key in ("starting_capital", "current_compounded_capital", "realized_compounded_capital", "realized_profit_value", "suggested_next_seed_capital"):
             expect(key in perf, f"daily target performance missing {key}")
         pairs = out.get("pairs") or []
+        expect("pending_buybacks" in out, "daily target plan payload missing pending buybacks")
         if pairs:
             sample = pairs[0]
             for key in ("pair_id", "sell_symbol", "buy_symbol", "buy_target_exit_price", "expected_profit_value", "rotation_score", "llm_verdict", "llm_note"):
@@ -752,6 +769,12 @@ def run():
             expect(match is not None and str(match.get("state") or "").lower() == "executed", "daily target pair update failed")
             perf_after = updated.get("performance") or {}
             expect("live_mtm_basis_value" in perf_after, "daily target performance missing net live mtm basis")
+            expect("pending_buybacks" in updated, "daily target update payload missing pending buybacks")
+            pending_after_sell = updated.get("pending_buybacks") or []
+            expect(
+                any(str(x.get("symbol") or "").upper() == str(sample.get("sell_symbol") or "").upper() for x in pending_after_sell),
+                "daily target sell execution did not create pending buyback watchlist row",
+            )
             plan_id = int((updated.get("plan") or {}).get("id") or 0)
             reverse_pair = {
                 "priority_rank": 99,
@@ -793,6 +816,11 @@ def run():
             closed_cycle = next((c for c in cycles if c.get("symbol") == sample.get("buy_symbol")), None)
             expect(closed_cycle is not None, "daily target full cycle row missing closed scrip")
             expect("full cycle complete" in str(closed_cycle.get("comment") or "").lower(), "daily target full cycle comment missing")
+            pending_after_buyback = cycle_payload.get("pending_buybacks") or []
+            expect(
+                not any(str(x.get("symbol") or "").upper() == str(sample.get("sell_symbol") or "").upper() for x in pending_after_buyback),
+                "daily target buyback execution did not clear pending buyback watchlist row",
+            )
         _, hist = req("GET", "/api/v1/daily-target/history?limit=50", expected=200)
         expect("items" in hist and "summary" in hist, "daily target history payload incomplete")
         if hist.get("items"):

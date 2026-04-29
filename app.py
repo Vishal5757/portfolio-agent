@@ -305,13 +305,12 @@ def load_tenant_meta():
         if not key or key in seen:
             continue
         seen.add(key)
-        cleaned.append(
-            {
-                "key": key,
-                "name": sanitize_tenant_name(t.get("name"), fallback=key.upper()),
-                "created_at": str(t.get("created_at") or now_iso()),
-            }
-        )
+        entry = {
+            "key": key,
+            "name": sanitize_tenant_name(t.get("name"), fallback=key.upper()),
+            "created_at": str(t.get("created_at") or now_iso()),
+        }
+        cleaned.append(entry)
 
     if DEFAULT_TENANT_KEY not in seen:
         cleaned.insert(
@@ -340,6 +339,10 @@ def load_tenant_meta():
 def save_tenant_meta(meta):
     DATA_DIR.mkdir(exist_ok=True)
     TENANTS_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_local_client(handler):
+    return str(handler.client_address[0]) in ("127.0.0.1", "::1", "localhost")
 
 
 def ensure_tenant_bootstrap():
@@ -1043,6 +1046,8 @@ def ensure_schema_migrations():
         if "exit_at" not in dtp_cols:
             conn.execute("ALTER TABLE daily_target_positions ADD COLUMN exit_at TEXT")
         conn.execute("UPDATE daily_target_positions SET initial_qty = qty WHERE COALESCE(initial_qty,0) <= 0 AND COALESCE(qty,0) > 0")
+        if "cycle_type" not in dtp_cols:
+            conn.execute("ALTER TABLE daily_target_positions ADD COLUMN cycle_type TEXT NOT NULL DEFAULT 'buy_sell'")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS price_ticks (
@@ -1692,11 +1697,11 @@ HOSTED_LLM_PROVIDERS = {
         "notes": "Fast hosted inference. Requires a free Groq API key and is subject to free-tier limits.",
     },
     "huggingface": {
-        "label": "Hugging Face Inference Providers",
-        "base_url": "https://router.huggingface.co/v1/chat/completions",
+        "label": "Hugging Face Serverless Inference",
+        "base_url": "https://api-inference.huggingface.co/v1/chat/completions",
         "model": "Qwen/Qwen2.5-7B-Instruct",
         "api_key_config": "hosted_llm_huggingface_api_key",
-        "notes": "Hosted inference provider router. Requires a free Hugging Face token.",
+        "notes": "HF-hosted serverless inference (free). Requires a Hugging Face token with READ scope from hf.co/settings/tokens. Does NOT require a PRO subscription.",
     },
 }
 HOSTED_LLM_DEFAULT_ORDER = "openrouter,groq,huggingface"
@@ -1954,7 +1959,7 @@ def _hosted_llm_chat_once(provider, api_key, model, messages, timeout_sec=HOSTED
         if int(getattr(ex, "code", 0) or 0) in (401, 403):
             msg = f"auth_or_access_{int(ex.code)}"
             if provider == "huggingface":
-                msg += "; Hugging Face token lacks Inference Provider access or this model/provider is not available for the token."
+                msg += "; Hugging Face token is invalid or lacks READ scope. Create a token at hf.co/settings/tokens (type: Read). No PRO subscription required."
             elif provider == "openrouter":
                 msg += "; OpenRouter key is invalid or has no access to the selected model."
             elif provider == "groq":
@@ -11800,6 +11805,69 @@ def _append_daily_target_full_cycle_note(conn, exit_pair_id, cycles):
         )
 
 
+def _append_daily_target_buyback_cycle_note(conn, buy_pair_id, cycles):
+    """Write buyback-cycle notes to the buy pair's completion_note.
+
+    Each entry captures: symbol, qty, sold-at price, bought-back price, realized
+    profit, plus the full multi-factor reasoning from both the sell pair (why we
+    exited) and the buy pair (why we re-entered: score, direction, intel, chart,
+    momentum, tax-alpha, rotation score).
+    """
+    if not cycles:
+        return
+    pid = int(parse_float(buy_pair_id, 0.0))
+    buy_pair = conn.execute(
+        "SELECT completion_note, buy_score, buy_reason, sell_score, sell_reason, rotation_score "
+        "FROM daily_target_plan_pairs WHERE id = ?",
+        (pid,),
+    ).fetchone()
+    if not buy_pair:
+        return
+    existing = str(buy_pair["completion_note"] or "").strip()
+    lines = [existing] if existing else []
+    existing_lower = existing.lower()
+    buy_score = round(parse_float(buy_pair["buy_score"], 0.0), 2)
+    buy_reason = str(buy_pair["buy_reason"] or "").strip()
+    rot_score = round(parse_float(buy_pair["rotation_score"], 0.0), 2)
+    for c in cycles:
+        sell_pair_id = int(parse_float(c.get("sell_pair_id"), 0.0))
+        marker = f"buyback cycle #{int(c['position_id'])}"
+        if marker.lower() in existing_lower:
+            continue
+        sell_reasoning = ""
+        if sell_pair_id:
+            sp = conn.execute(
+                "SELECT sell_score, sell_reason FROM daily_target_plan_pairs WHERE id = ?",
+                (sell_pair_id,),
+            ).fetchone()
+            if sp:
+                s_score = round(parse_float(sp["sell_score"], 0.0), 2)
+                s_reason = str(sp["sell_reason"] or "").strip()
+                sell_reasoning = (
+                    f"; exit: {s_reason} [sell_score {s_score}]"
+                    if s_reason
+                    else f"; exit: [sell_score {s_score}]"
+                )
+        buy_reasoning = (
+            f"; re-entry: {buy_reason} [buy_score {buy_score}, rot {rot_score}]"
+            if buy_reason
+            else f"; re-entry: [buy_score {buy_score}, rot {rot_score}]"
+        )
+        lines.append(
+            f"{marker}: {c['symbol']} qty {round(parse_float(c['qty'], 0.0), 4)} "
+            f"sold@{round(parse_float(c['sell_price'], 0.0), 2)} "
+            f"bought-back@{round(parse_float(c['buy_price'], 0.0), 2)}, "
+            f"profit {round(parse_float(c['realized_profit'], 0.0), 2)}"
+            f"{sell_reasoning}{buy_reasoning}"
+        )
+    note = "\n".join([x for x in lines if str(x or "").strip()]).strip()
+    if note != existing:
+        conn.execute(
+            "UPDATE daily_target_plan_pairs SET completion_note = ?, updated_at = ? WHERE id = ?",
+            (note[:1200], now_iso(), pid),
+        )
+
+
 def sync_daily_target_positions(conn, pair_id):
     iid = int(parse_float(pair_id, 0.0))
     row = conn.execute(
@@ -11861,6 +11929,96 @@ def sync_daily_target_positions(conn, pair_id):
                     now_iso(),
                 ),
             )
+        # Close any pending_buyback positions for this buy_symbol. These are
+        # SELL-to-BUY rotation round trips where the scrip was sold in a prior pair
+        # and is now being bought back (potentially paired with a completely
+        # different sell scrip).  Consume FIFO, calculate profit as
+        # (sold_price - buyback_price) * qty minus pro-rated entry costs.
+        pending_buybacks = conn.execute(
+            """
+            SELECT id, qty, initial_qty, closed_qty, entry_price, realized_profit, source_pair_id
+            FROM daily_target_positions
+            WHERE UPPER(symbol) = ? AND LOWER(status) = 'pending_buyback' AND source_pair_id <> ?
+            ORDER BY entry_at ASC, id ASC
+            """,
+            (symbol_upper(row["buy_symbol"]), iid),
+        ).fetchall()
+        if pending_buybacks:
+            tax_cfg_pb = get_tax_profile_config(conn)
+            total_buy_value_pb = round(buy_price * buy_qty, 2)
+            pb_entry_costs = _daily_target_zerodha_delivery_costs(
+                total_buy_value_pb, exchange="NSE", side="BUY", include_dp_on_sell=False, tax_cfg=tax_cfg_pb
+            )
+            pb_entry_cost_total = parse_float(pb_entry_costs.get("total"), 0.0)
+            pb_remaining = buy_qty
+            buyback_cycles = []
+            for pb in pending_buybacks:
+                if pb_remaining <= 1e-9:
+                    break
+                pb_id = int(parse_float(pb["id"], 0.0))
+                pb_qty = parse_float(pb["qty"], 0.0)
+                pb_closed_qty = parse_float(pb["closed_qty"], 0.0)
+                pb_sell_price = parse_float(pb["entry_price"], 0.0)
+                pb_realized = parse_float(pb["realized_profit"], 0.0)
+                if pb_qty <= 1e-9:
+                    continue
+                close_qty = min(pb_qty, pb_remaining)
+                closed_qty_total = round(pb_closed_qty + close_qty, 4)
+                if pb_sell_price > 0:
+                    gross_profit = round((pb_sell_price - buy_price) * close_qty, 2)
+                    cost_share = round(pb_entry_cost_total * (close_qty / max(buy_qty, 1e-9)), 2)
+                    realized_add = round(gross_profit - cost_share, 2)
+                else:
+                    realized_add = 0.0
+                realized_total = round(pb_realized + realized_add, 2)
+                if pb_qty <= (pb_remaining + 1e-9):
+                    conn.execute(
+                        """
+                        UPDATE daily_target_positions
+                        SET qty = 0, closed_qty = ?, realized_profit = ?, exit_pair_id = ?,
+                            exit_price = ?, exit_value = ?, exit_at = ?,
+                            status = 'closed', cycle_type = 'sell_buyback', updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            closed_qty_total,
+                            realized_total,
+                            iid,
+                            round(buy_price, 4),
+                            round(close_qty * buy_price, 2),
+                            buy_at,
+                            now_iso(),
+                            pb_id,
+                        ),
+                    )
+                    buyback_cycles.append({
+                        "position_id": pb_id,
+                        "symbol": symbol_upper(row["buy_symbol"]),
+                        "qty": closed_qty_total,
+                        "sell_price": pb_sell_price,
+                        "buy_price": buy_price,
+                        "realized_profit": realized_total,
+                        "sell_pair_id": int(parse_float(pb["source_pair_id"], 0.0)),
+                    })
+                    pb_remaining -= pb_qty
+                else:
+                    conn.execute(
+                        """
+                        UPDATE daily_target_positions
+                        SET qty = ?, closed_qty = ?, realized_profit = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            round(pb_qty - pb_remaining, 4),
+                            closed_qty_total,
+                            realized_total,
+                            now_iso(),
+                            pb_id,
+                        ),
+                    )
+                    pb_remaining = 0.0
+            if buyback_cycles:
+                _append_daily_target_buyback_cycle_note(conn, iid, buyback_cycles)
     sell_qty = parse_float(row["sell_qty"], 0.0)
     sell_price = parse_float(row["executed_sell_price"], 0.0)
     sell_at = str(row["executed_sell_at"] or "").strip()
@@ -11950,6 +12108,34 @@ def sync_daily_target_positions(conn, pair_id):
                 )
                 remaining = 0.0
         _append_daily_target_full_cycle_note(conn, iid, closed_cycles)
+        # If sell qty was not fully absorbed by existing open positions, record
+        # the remainder as a pending_buyback.  This means we sold a scrip that
+        # wasn't tracked as an open position (e.g. an original portfolio holding
+        # or a scrip sold for the first time in this plan).  When a future pair
+        # buys this same scrip back, that will complete the SELL-to-BUY round trip
+        # and call _append_daily_target_buyback_cycle_note with the full
+        # multi-factor reasoning for why the re-entry was chosen.
+        if remaining > 1e-9:
+            conn.execute(
+                """
+                INSERT INTO daily_target_positions(
+                  source_pair_id, symbol, qty, initial_qty, closed_qty,
+                  entry_price, entry_value, realized_profit,
+                  entry_at, status, cycle_type, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, 0, ?, 'pending_buyback', 'sell_buyback', ?, ?)
+                """,
+                (
+                    iid,
+                    sell_symbol,
+                    round(remaining, 4),
+                    round(remaining, 4),
+                    round(sell_price, 4),
+                    round(remaining * sell_price, 2),
+                    sell_at,
+                    now_iso(),
+                    now_iso(),
+                ),
+            )
 
 
 def _daily_target_virtual_open_positions(conn):
@@ -12614,6 +12800,7 @@ def list_daily_target_full_cycles(conn, limit=10):
           p.realized_profit,
           p.source_pair_id,
           p.exit_pair_id,
+          COALESCE(p.cycle_type, 'buy_sell') AS cycle_type,
           entry_pair.plan_id AS entry_plan_id,
           exit_pair.plan_id AS exit_plan_id,
           COALESCE(exit_pair.completion_note, '') AS completion_note
@@ -12645,9 +12832,63 @@ def list_daily_target_full_cycles(conn, limit=10):
                 "realized_profit": round(parse_float(r["realized_profit"], 0.0), 2),
                 "source_pair_id": None if r["source_pair_id"] is None else int(parse_float(r["source_pair_id"], 0.0)),
                 "exit_pair_id": None if r["exit_pair_id"] is None else int(parse_float(r["exit_pair_id"], 0.0)),
+                "cycle_type": str(r["cycle_type"] or "buy_sell"),
                 "entry_plan_id": None if r["entry_plan_id"] is None else int(parse_float(r["entry_plan_id"], 0.0)),
                 "exit_plan_id": None if r["exit_plan_id"] is None else int(parse_float(r["exit_plan_id"], 0.0)),
                 "comment": str(r["completion_note"] or ""),
+            }
+        )
+    return out
+
+
+def list_daily_target_pending_buybacks(conn):
+    """Return all scrips that were sold in a pair but have no matching buy-back yet.
+
+    Each row shows why the scrip was originally exited (sell_score, sell_reason)
+    AND why the pair intended to re-enter something (buy_score, buy_reason,
+    rotation_score), i.e. the full multi-factor context that should inform
+    whether and when to buy back.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+          p.id          AS position_id,
+          p.symbol,
+          p.qty,
+          p.initial_qty,
+          p.entry_price AS sold_at_price,
+          p.entry_value AS sold_value,
+          p.entry_at    AS sold_at,
+          p.source_pair_id,
+          src.sell_score,
+          src.sell_reason,
+          src.buy_score,
+          src.buy_reason,
+          src.rotation_score,
+          src.buy_target_exit_price
+        FROM daily_target_positions p
+        LEFT JOIN daily_target_plan_pairs src ON src.id = p.source_pair_id
+        WHERE LOWER(COALESCE(p.status, '')) = 'pending_buyback'
+        ORDER BY p.entry_at ASC, p.id ASC
+        """
+    ).fetchall()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "position_id": int(parse_float(r["position_id"], 0.0)),
+                "symbol": str(r["symbol"] or ""),
+                "qty": round(parse_float(r["qty"], 0.0), 4),
+                "sold_at_price": round(parse_float(r["sold_at_price"], 0.0), 4),
+                "sold_value": round(parse_float(r["sold_value"], 0.0), 2),
+                "sold_at": str(r["sold_at"] or ""),
+                "source_pair_id": None if r["source_pair_id"] is None else int(parse_float(r["source_pair_id"], 0.0)),
+                "sell_score": round(parse_float(r["sell_score"], 0.0), 4),
+                "sell_reason": str(r["sell_reason"] or ""),
+                "buy_score": round(parse_float(r["buy_score"], 0.0), 4),
+                "buy_reason": str(r["buy_reason"] or ""),
+                "rotation_score": round(parse_float(r["rotation_score"], 0.0), 4),
+                "buy_target_exit_price": round(parse_float(r["buy_target_exit_price"], 0.0), 4),
             }
         )
     return out
@@ -12660,6 +12901,7 @@ def _daily_target_plan_payload(conn, plan_row):
         realized_tax = compute_realized_equity_tax_summary(conn)
         effective_seed_capital = round(parse_float(perf.get("suggested_next_seed_capital"), 10000.0), 2)
         size_summary = _daily_target_trade_size_summary(effective_seed_capital, 1.0, tax_cfg=tax_cfg)
+        pending_buybacks = list_daily_target_pending_buybacks(conn)
         return {
             "plan": None,
             "summary": {
@@ -12674,6 +12916,7 @@ def _daily_target_plan_payload(conn, plan_row):
                 "buy_done_pairs": 0,
                 "skipped_pairs": 0,
                 "replaced_pairs": 0,
+                "pending_buybacks": len(pending_buybacks),
                 "projected_pending_profit": 0.0,
                 "suggested_next_seed_capital": effective_seed_capital,
                 "tax_mode": "equity_special_rates",
@@ -12692,6 +12935,7 @@ def _daily_target_plan_payload(conn, plan_row):
             "snapshots": [],
             "performance": perf,
             "full_cycles": list_daily_target_full_cycles(conn, limit=10),
+            "pending_buybacks": pending_buybacks,
         }
     plan_id = int(parse_float(plan_row.get("id"), 0.0))
     pair_rows = conn.execute(
@@ -12799,6 +13043,8 @@ def _daily_target_plan_payload(conn, plan_row):
         tax_cfg=tax_cfg,
     )
     summary.update(size_summary)
+    pending_buybacks = list_daily_target_pending_buybacks(conn)
+    summary["pending_buybacks"] = len(pending_buybacks)
     return {
         "plan": {
             "id": plan_id,
@@ -12818,6 +13064,7 @@ def _daily_target_plan_payload(conn, plan_row):
         "snapshots": _daily_target_plan_snapshots(conn, plan_id, limit=80),
         "performance": perf,
         "full_cycles": list_daily_target_full_cycles(conn, limit=10),
+        "pending_buybacks": pending_buybacks,
     }
 
 
@@ -18740,8 +18987,8 @@ def _cors_origin(handler):
 
 
 def _validate_local_mutation(handler):
-    if not _same_origin_allowed(handler):
-        json_response(handler, {"error": "origin_not_allowed", "code": "ORIGIN_NOT_ALLOWED"}, HTTPStatus.FORBIDDEN)
+    if not _is_local_client(handler):
+        json_response(handler, {"error": "writes_require_local_access", "code": "LOCAL_ONLY"}, HTTPStatus.FORBIDDEN)
         return False
     if str(handler.headers.get(LOCAL_MUTATION_HEADER) or "").strip() != "1":
         json_response(
