@@ -19097,6 +19097,11 @@ class AppHandler(SimpleHTTPRequestHandler):
             try:
                 self._activate_request_tenant(parsed)
                 self.handle_api_get(parsed)
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower():
+                    json_response(self, {"error": str(exc), "code": "DB_LOCKED"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                else:
+                    json_response(self, {"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             except ValueError as exc:
                 json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
@@ -19125,6 +19130,11 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.handle_api_post(parsed)
         except PayloadTooLarge as exc:
             json_response(self, {"error": str(exc), "code": "PAYLOAD_TOO_LARGE"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower():
+                json_response(self, {"error": str(exc), "code": "DB_LOCKED"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            else:
+                json_response(self, {"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         except ValueError as exc:
             json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -19144,6 +19154,11 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.handle_api_put(parsed)
         except PayloadTooLarge as exc:
             json_response(self, {"error": str(exc), "code": "PAYLOAD_TOO_LARGE"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower():
+                json_response(self, {"error": str(exc), "code": "DB_LOCKED"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            else:
+                json_response(self, {"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         except ValueError as exc:
             json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -19161,6 +19176,11 @@ class AppHandler(SimpleHTTPRequestHandler):
         try:
             self._activate_request_tenant(parsed)
             self.handle_api_delete(parsed)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower():
+                json_response(self, {"error": str(exc), "code": "DB_LOCKED"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            else:
+                json_response(self, {"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         except ValueError as exc:
             json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:

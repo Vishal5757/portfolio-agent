@@ -88,7 +88,7 @@ function updateTradeUnitLabels(assetClass, symbol = "") {
   if ($("sellSimPriceLabel")) $("sellSimPriceLabel").textContent = isGold ? "Sell Price (/gm)" : "Sell Price";
 }
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, _retries = 3) {
   const headers = {
     "Content-Type": "application/json",
     [LOCAL_MUTATION_HEADER]: "1",
@@ -111,6 +111,11 @@ async function api(path, opts = {}) {
     err.code = String((parsed && (parsed.code || parsed.error)) || `HTTP_${res.status}`);
     err.reason = String((parsed && (parsed.message || parsed.error)) || raw || err.message || "Request failed");
     err.payload = parsed;
+    // Auto-retry on DB lock: backend returns 503 with code DB_LOCKED
+    if (err.status === 503 && err.code === "DB_LOCKED" && _retries > 0) {
+      await new Promise((r) => setTimeout(r, 900));
+      return api(path, opts, _retries - 1);
+    }
     throw err;
   }
   return res.json();
@@ -5541,5 +5546,10 @@ async function init() {
 
 init().catch((e) => {
   console.error(e);
-  alert(`Initialization failed: ${e.message}`);
+  const banner = $("initErrorBanner");
+  const msg = $("initErrorMsg");
+  if (banner && msg) {
+    msg.textContent = `Initialization failed: ${e.message}`;
+    banner.style.display = "flex";
+  }
 });
