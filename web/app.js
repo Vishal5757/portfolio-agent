@@ -2875,8 +2875,11 @@ function renderDailyTargetPlan(payload) {
       <div class="metric">Cumulative Sell Value: ${money(perf.cumulative_sell_value)}</div>
       <div class="metric">Cumulative Buy Value: ${money(perf.cumulative_buy_value)}</div>
       <div class="metric">Open Trade Cost Basis: ${money(perf.live_mtm_basis_value)}</div>
-      <div class="metric ${clsBySign(perf.live_mtm_pnl)}">Net Live P/L: ${money(perf.live_mtm_pnl)}</div>
-      <div class="metric ${clsBySign(perf.live_mtm_return_pct)}">Net Live Return %: ${pct(perf.live_mtm_return_pct)}</div>
+      <div class="metric ${clsBySign(perf.live_mtm_pnl)}">Gross Live P/L: ${money(perf.live_mtm_pnl)}</div>
+      <div class="metric ${clsBySign(perf.live_mtm_return_pct)}">Gross Live Return %: ${pct(perf.live_mtm_return_pct)}</div>
+      <div class="metric neg" title="Estimated Zerodha delivery charges (STT, txn, SEBI, GST, DP) if sold at current price">Est. Sell Charges: ${money(perf.live_mtm_est_charges)}</div>
+      <div class="metric neg" title="Estimated STCG/LTCG tax drag on open positions if sold at current price">Est. Tax Drag: ${money(perf.live_mtm_est_tax)}</div>
+      <div class="metric ${clsBySign(perf.net_live_pnl_est)}" title="Gross Live P/L minus estimated sell charges and tax. Pre-buy-charges (already sunk).">Net Live P/L (after charges+tax): ${money(perf.net_live_pnl_est)}</div>
       <div class="metric">Latest Symbol: ${escapeHtml(String(perf.latest_symbol || "-"))}</div>
       <div class="metric">Latest Trade Date: ${escapeHtml(String(perf.latest_trade_date || "-"))}</div>
     `;

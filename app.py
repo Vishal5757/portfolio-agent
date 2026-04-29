@@ -12183,6 +12183,9 @@ def compute_daily_target_performance(conn):
             "cumulative_buy_value": 0.0,
             "live_mtm_pnl": 0.0,
             "live_mtm_return_pct": 0.0,
+            "live_mtm_est_charges": 0.0,
+            "live_mtm_est_tax": 0.0,
+            "net_live_pnl_est": 0.0,
             "latest_symbol": "",
             "latest_trade_date": "",
             "suggested_next_seed_capital": 10000.0,
@@ -12237,18 +12240,42 @@ def compute_daily_target_performance(conn):
         ORDER BY entry_at ASC, id ASC
         """
     ).fetchall()
+    live_mtm_est_charges = 0.0
+    live_mtm_est_tax = 0.0
+    net_live_pnl_est = 0.0
     if open_positions:
         latest_balance = realized_compounded_capital
         total_entry_value = 0.0
         live_mtm_pnl = 0.0
+        _tax_cfg = get_tax_profile_config(conn)
+        _split_map = load_split_map(conn)
+        _realized_tax = compute_realized_equity_tax_summary(conn)
         for pos in open_positions:
             px = get_effective_ltp(conn, pos["symbol"])
             qty = parse_float(pos["qty"], 0.0)
             current_value = round(qty * px, 2) if px > 0 and qty > 0 else round(parse_float(pos["entry_value"], 0.0), 2)
             entry_value = round(parse_float(pos["entry_value"], 0.0), 2)
-            latest_balance += (current_value - entry_value)
-            live_mtm_pnl += round(current_value - entry_value, 2)
-            total_entry_value += round(parse_float(pos["entry_value"], 0.0), 2)
+            gross_pnl = round(current_value - entry_value, 2)
+            latest_balance += gross_pnl
+            live_mtm_pnl += gross_pnl
+            total_entry_value += entry_value
+            if px > 0 and qty > 0:
+                sell_costs = _daily_target_zerodha_delivery_costs(
+                    current_value, exchange="NSE", side="SELL",
+                    include_dp_on_sell=True, tax_cfg=_tax_cfg,
+                )
+                sell_tax = _daily_target_estimate_sell_tax_profile(
+                    conn, symbol_upper(pos["symbol"]), qty, px,
+                    split_map=_split_map, tax_cfg=_tax_cfg,
+                    realized_tax_summary=_realized_tax,
+                )
+                pos_charges = round(parse_float(sell_costs.get("total"), 0.0), 2)
+                pos_tax = round(parse_float(sell_tax.get("tax_drag"), 0.0), 2)
+                live_mtm_est_charges += pos_charges
+                live_mtm_est_tax += pos_tax
+                net_live_pnl_est += round(gross_pnl - pos_charges - pos_tax, 2)
+            else:
+                net_live_pnl_est += gross_pnl
         live_mtm_pnl = round(live_mtm_pnl, 2)
         live_mtm_basis_value = round(total_entry_value, 2)
         live_mtm_return_pct = round((live_mtm_pnl / total_entry_value) * 100.0, 2) if total_entry_value > 0 else 0.0
@@ -12279,6 +12306,9 @@ def compute_daily_target_performance(conn):
         "live_mtm_pnl": round(live_mtm_pnl, 2),
         "live_mtm_return_pct": round(live_mtm_return_pct, 2),
         "live_mtm_basis_value": round(live_mtm_basis_value, 2),
+        "live_mtm_est_charges": round(live_mtm_est_charges, 2),
+        "live_mtm_est_tax": round(live_mtm_est_tax, 2),
+        "net_live_pnl_est": round(net_live_pnl_est, 2),
         "latest_symbol": latest_symbol,
         "latest_trade_date": latest_trade_date,
         "suggested_next_seed_capital": realized_compounded_capital,
