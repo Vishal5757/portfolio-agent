@@ -128,3 +128,171 @@ Files: app.py, portfolio_agent/utils.py, portfolio_agent/quote_manager.py, portf
 Tests: pending
 Next: Review diff, run py_compile/button tests, report findings
 Blockers: none
+
+### 2026-04-26 23:49 IST | Claude | handoff
+State: Commit 8365893 landed. Session summary: +2 new modules (utils.py 160 lines, quote_manager.py ~310 lines), __init__.py updated. 19 functions extracted from app.py, all wired via bottom shims. 80/80 smoke tests PASS, 53/53 button contract PASS. app.py still fully compatible.
+Files: portfolio_agent/utils.py, portfolio_agent/quote_manager.py, portfolio_agent/__init__.py, app.py
+Tests: -
+Next: Codex: pick up tax-harvest helpers (_harvest_tax_bucket etc lines 9368-9400), or assistant_chat helpers. Claude available for next task.
+Blockers: none
+
+### 2026-04-26 23:50 IST | Codex | verify
+State: Review/test pass for Claude extraction so far. py_compile and full smoke passed. Noted style follow-up: new modules contain non-ASCII doc/comment chars; runtime OK, but Codex recommends ASCII cleanup before final commit. Existing _core import app pattern pre-dates this extraction, not blocking this slice.
+Files: app.py, portfolio_agent/utils.py, portfolio_agent/quote_manager.py, portfolio_agent/__init__.py
+Tests: py_compile app/modules OK; button_contract PASS; full_system_smoke_test TOTAL=80 FAIL=0
+Next: Claude can either ASCII-clean claimed files or hand off for Codex cleanup after extraction stabilizes
+Blockers: none
+
+### 2026-04-26 23:50 IST | Codex | claim
+State: Adding smoke-test contract for Claude modular extraction; no edits to app.py or portfolio_agent modules.
+Files: tools/full_system_smoke_test.py
+Tests: pending
+Next: Patch contract, run smoke/button tests
+Blockers: none
+
+### 2026-04-26 23:51 IST | Claude | claim
+State: Picking up Codex review feedback: ASCII-cleaning portfolio_agent/utils.py and portfolio_agent/quote_manager.py (rupee symbol in money() docstring + any em-dashes). Not touching smoke_test.py — Codex owns that.
+Files: portfolio_agent/utils.py, portfolio_agent/quote_manager.py
+Tests: -
+Next: Will post verify after clean. Then continue with tax-harvest extraction.
+Blockers: none
+
+### 2026-04-26 23:51 IST | Codex | verify
+State: Added modular extraction smoke contract covering app wiring and new utils/quote_manager module functions. Full smoke now passes with 81 checks.
+Files: tools/full_system_smoke_test.py
+Tests: py_compile full_system_smoke_test OK; full_system_smoke_test TOTAL=81 FAIL=0; button_contract PASS earlier
+Next: Waiting for Claude extraction handoff; Codex can commit test with Claude implementation when stable
+Blockers: none
+
+### 2026-04-26 23:52 IST | Codex | progress
+State: ASCII review after partial cleanup: remaining non-ASCII counts are utils.py=6 (rupee/minus literals), quote_manager.py=6 (multiplication/en/em dashes), __init__.py=7 (em dash/ellipsis). Recommend using ASCII text or unicode escapes for parser literals.
+Files: portfolio_agent/utils.py, portfolio_agent/quote_manager.py, portfolio_agent/__init__.py
+Tests: non-ASCII scan only
+Next: Claude: please finish cleanup or hand off these files to Codex; Codex will avoid claimed files until then
+Blockers: none
+
+### 2026-04-26 23:54 IST | Claude | verify
+State: ASCII cleanup done per Codex review. Commit 00836c4: replaced em-dashes in docstrings with --, Unicode string literals in utils.py with \uXXXX escapes (rupee, minus). Both modules now fully ASCII. py_compile OK x3, button_contract 53/53. Smoke test still due -- leaving that to Codex.
+Files: portfolio_agent/utils.py, portfolio_agent/quote_manager.py
+Tests: -
+Next: Continuing with next extraction: tax-harvest helpers. Will claim before editing.
+Blockers: none
+
+### 2026-04-26 23:54 IST | Claude | claim
+State: Claiming portfolio_agent/tax_utils.py -- extracting India FY bounds, tax bucket helpers, and FY realized equity summary. _harvest_action/signal/score helpers also being moved. Uses _core() for parse_history_date, load_split_map etc.
+Files: portfolio_agent/tax_utils.py, app.py
+Tests: -
+Next: Writing module now.
+Blockers: none
+
+### 2026-04-26 23:56 IST | Claude | handoff
+State: Commit d4e0fce: portfolio_agent/tax_utils.py added (230 lines). Extracted 10 functions: india_fy_bounds, harvest_tax_bucket, _rank, _bias, harvest_action/signal/expected_move/direction/priority_reason, compute_realized_equity_tax_summary. Smoke 81/81 PASS (noticed Codex added 1 new test -- nice). ASCII-clean. Next target: assistant_chat helpers or rebalance suggestion logic.
+Files: portfolio_agent/tax_utils.py, app.py
+Tests: -
+Next: Codex: review d4e0fce or claim next area. Claude taking a breather -- ping when ready.
+Blockers: none
+
+### 2026-04-27 09:22 IST | Codex | claim
+State: Creating one-click app launcher: root CMD button plus browser auto-open in run-app.ps1. Avoiding app.py/portfolio_agent files.
+Files: Start Portfolio Agent.cmd, tools/run-app.ps1, README.md
+Tests: pending
+Next: Patch launcher, parse-test scripts, run existing tests
+Blockers: none
+
+### 2026-04-27 09:24 IST | Codex | verify
+State: One-click launcher completed and pushed. Double-click Start Portfolio Agent.cmd to start server and auto-open browser. Also committed modular extraction smoke contract.
+Files: Start Portfolio Agent.cmd, tools/run-app.ps1, README.md, tools/full_system_smoke_test.py
+Tests: run-app.ps1 syntax OK; button_contract PASS; full_system_smoke_test TOTAL=81 FAIL=0; git diff --check PASS
+Next: User can launch via Start Portfolio Agent.cmd; cowork.md remains live/uncommitted
+Blockers: none
+
+### 2026-04-27 10:36 IST | Claude | claim
+State: Claiming daily target compounding feature: market-working-days helper, target MTM capital to date, diff-to-target, achieved highlight
+Files: portfolio_agent/utils.py, app.py, web/app.js
+Tests: -
+Next: Codex handles test suite updates if needed
+Blockers: none
+
+### 2026-04-27 10:40 IST | Claude | verify
+State: daily target compounding feature complete. py_compile OK, 53 button contracts pass, 81/81 smoke tests pass. New fields in compute_daily_target_performance: target_capital_to_date, diff_to_target, working_days_elapsed, plan_start_date, target_achieved. Banner + badge highlight in dailyTargetPerformance div.
+Files: portfolio_agent/utils.py, app.py, web/app.js, web/styles.css
+Tests: -
+Next: Codex: review test coverage or pick next backlog item
+Blockers: none
+
+### 2026-04-27 17:20 IST | Codex | claim
+State: User set rule: always coordinate through cowork before editing. Planning Exit App button; inspecting current uncommitted app/web changes before touching files.
+Files: app.py, web/index.html, web/app.js, web/styles.css
+Tests: pending
+Next: Inspect diffs and active claims; then patch only safe sections
+Blockers: none
+
+### 2026-04-27 17:20 IST | Codex | verify
+State: Verified Claude daily-target compounding handoff before touching exit button. Full smoke is green; committing handoff separately now.
+Files: portfolio_agent/utils.py, app.py, web/app.js, web/styles.css
+Tests: py_compile OK; button_contract PASS; full_system_smoke_test TOTAL=81 FAIL=0
+Next: Commit Claude handoff, then implement Exit App button
+Blockers: none
+
+### 2026-04-27 17:22 IST | Codex | verify
+State: Exit App button implemented and validated. Header button calls local shutdown endpoint with confirmation; endpoint responds then stops server on a background thread.
+Files: app.py, web/index.html, web/app.js, web/styles.css, tools/full_system_smoke_test.py
+Tests: py_compile OK; button_contract 54/54 PASS; full_system_smoke_test TOTAL=82 FAIL=0; targeted shutdown endpoint test returned 200 and server thread stopped
+Next: Commit and push exit button; cowork.md remains live/uncommitted
+Blockers: none
+
+### 2026-04-29 09:29 IST | Codex | claim
+State: Investigating Daily target unavailable: database is locked. Will inspect SQLite connection/transaction handling and daily-target endpoint; coordinate before edits.
+Files: app.py, portfolio_agent/*, tools/full_system_smoke_test.py
+Tests: pending
+Next: Inspect locks/connection settings and recent cowork claims
+Blockers: none
+
+### 2026-04-29 09:31 IST | Codex | progress
+State: SQLite lock fix passes its contract, but full smoke has 2 unrelated failures from existing uncommitted changes: hosted LLM hint text and daily target full-cycle row. Inspecting before edits.
+Files: app.py, web/app.js, tools/full_system_smoke_test.py
+Tests: full_system_smoke_test TOTAL=83 FAIL=2
+Next: Inspect failed assertions and determine whether to patch tests or behavior
+Blockers: none
+
+### 2026-04-29 09:36 IST | Codex | verify
+State: SQLite lock resilience fix committed/pushed. Added 30s sqlite timeout, busy_timeout PRAGMA, WAL mode on app/market DB init, and smoke coverage. Existing unrelated local app/web changes remain unstaged.
+Files: app.py, tools/full_system_smoke_test.py
+Tests: py_compile OK; button_contract PASS; full_system_smoke_test TOTAL=83 FAIL=0; git diff --cached --check PASS
+Next: User should restart app so WAL/busy_timeout takes effect; if lock persists check duplicate app instances
+Blockers: none
+
+### 2026-04-29 09:36 IST | Codex | handoff
+State: SQLite lock issue addressed for Daily Target. Commit 0b9cc27 pushed: 30s sqlite timeout, busy_timeout PRAGMA, WAL mode on app/market DB init, smoke contract updated. User should fully exit/restart app. Remaining local uncommitted files are unrelated: app.py, web/app.js, cowork.md.
+Files: app.py, tools/full_system_smoke_test.py
+Tests: py_compile OK; button_contract PASS; full_system_smoke_test TOTAL=83 FAIL=0
+Next: If lock persists after restart, check duplicate app windows/processes holding portfolio.db
+Blockers: none
+
+### 2026-04-29 10:11 IST | Claude | verify
+State: Status check: all cowork items verified clean. SQLite WAL/lock fix (0b9cc27) committed. Exit button (93f6ff6) committed. Daily target compounding benchmark (92bf65e) committed. Remote access (view_token share-link system) now removed -- VIEW_TOKEN_HEADER, _ensure/_rotate_tenant_view_token, _is_lan_read_allowed, GET/POST view-token routes, secrets import all deleted from app.py + app.js. Tests: py_compile OK, button_contract 54/54, smoke TOTAL=83 FAIL=0. Uncommitted in working tree: app.py (remote access removal + Codex HF URL fix + buyback cycle fn + cycle_type migration), web/app.js (remote access removal). Codex should commit or claim the HF/buyback/cycle_type items.
+Files: app.py, web/app.js
+Tests: -
+Next: Codex: commit your HF URL fix, buyback cycle fn, cycle_type migration
+Blockers: none
+
+### 2026-04-29 10:12 IST | Codex | claim
+State: Claiming Claude handoff for remaining local changes: HF serverless URL/hint fix, daily-target buyback cycle support, cycle_type migration. Will inspect diff, test, commit/push if clean.
+Files: app.py, web/app.js
+Tests: pending
+Next: Review diff and run py_compile/button/smoke
+Blockers: none
+
+### 2026-04-29 10:14 IST | Codex | progress
+State: Review found leftover LAN/TLS scaffolding after view-token removal. Removed 0.0.0.0 bind/TLS args/unused URL parsing, kept local-only server. Added smoke guards for local-only server and daily-target buyback-cycle tracking.
+Files: app.py, web/app.js, tools/full_system_smoke_test.py
+Tests: full smoke was green before guards; rerunning now
+Next: Run py_compile/button/smoke, commit/push if clean
+Blockers: none
+
+### 2026-04-29 10:19 IST | Codex | verify
+State: Reviewed Claude handoff and completed code-only action: finalized HF serverless hint, local-only server cleanup, daily-target buyback cycle tracking, API payload exposure, and Pending Buyback Watchlist UI. Fixed partial buyback closed_qty accumulation.
+Files: app.py, web/app.js, web/index.html, tools/full_system_smoke_test.py
+Tests: py_compile OK; button_contract_test PASS; full_system_smoke_test TOTAL=84 FAIL=0; git diff --check OK
+Next: Commit and push code files only; keep cowork.md uncommitted as live log.
+Blockers: none
