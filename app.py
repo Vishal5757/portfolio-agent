@@ -118,6 +118,8 @@ REPO_SYNC_INTERVAL_DEFAULT_SEC = 60 * 60
 REPO_SYNC_MIN_INTERVAL_SEC = 5 * 60
 MAX_JSON_BODY_BYTES = 25 * 1024 * 1024
 LOCAL_MUTATION_HEADER = "X-Portfolio-Agent-Local"
+SQLITE_TIMEOUT_SEC = 30
+SQLITE_BUSY_TIMEOUT_MS = SQLITE_TIMEOUT_SEC * 1000
 GIT_EXE_CANDIDATES = (
     Path(r"C:\Program Files\Git\cmd\git.exe"),
     Path(r"C:\Program Files\Git\bin\git.exe"),
@@ -636,27 +638,36 @@ def parse_excel_date(value):
     return None
 
 
+def _configure_sqlite_connection(conn):
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    return conn
+
+
+def _enable_sqlite_wal(conn):
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+
 def db_connect():
     p = tenant_paths(get_current_tenant_key())
     p["data_dir"].mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p["db_path"])
-    conn.row_factory = sqlite3.Row
-    return conn
+    return _configure_sqlite_connection(sqlite3.connect(p["db_path"], timeout=SQLITE_TIMEOUT_SEC))
 
 
 def market_db_connect():
     init_market_history_db()
     p = tenant_paths(get_current_tenant_key())
-    conn = sqlite3.connect(p["market_db_path"])
-    conn.row_factory = sqlite3.Row
-    return conn
+    return _configure_sqlite_connection(sqlite3.connect(p["market_db_path"], timeout=SQLITE_TIMEOUT_SEC))
 
 
 def init_market_history_db(tenant_key=None):
     p = tenant_paths(tenant_key or get_current_tenant_key())
     p["data_dir"].mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p["market_db_path"])
+    conn = sqlite3.connect(p["market_db_path"], timeout=SQLITE_TIMEOUT_SEC)
     try:
+        _enable_sqlite_wal(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS daily_prices (
@@ -683,6 +694,7 @@ def init_db():
     p["backup_dir"].mkdir(parents=True, exist_ok=True)
     init_market_history_db()
     with db_connect() as conn:
+        _enable_sqlite_wal(conn)
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
         conn.commit()
     ensure_schema_migrations()

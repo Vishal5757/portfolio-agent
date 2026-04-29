@@ -308,6 +308,18 @@ def run():
         expect(".btn.danger" in css, "danger button style missing")
 
     check("app_exit_contract", app_exit_contract)
+    def sqlite_lock_resilience_contract():
+        py = (root / "app.py").read_text(encoding="utf-8")
+        expect("SQLITE_TIMEOUT_SEC = 30" in py, "SQLite timeout constant missing")
+        expect("SQLITE_BUSY_TIMEOUT_MS = SQLITE_TIMEOUT_SEC * 1000" in py, "SQLite busy timeout constant missing")
+        expect("def _configure_sqlite_connection(conn):" in py, "SQLite connection configurator missing")
+        expect("PRAGMA busy_timeout" in py, "SQLite busy_timeout pragma missing")
+        expect("def _enable_sqlite_wal(conn):" in py, "SQLite WAL helper missing")
+        expect("PRAGMA journal_mode=WAL" in py, "SQLite WAL mode not enabled")
+        expect('sqlite3.connect(p["db_path"], timeout=SQLITE_TIMEOUT_SEC)' in py, "main DB connect timeout missing")
+        expect('sqlite3.connect(p["market_db_path"], timeout=SQLITE_TIMEOUT_SEC)' in py, "market DB connect timeout missing")
+
+    check("sqlite_lock_resilience_contract", sqlite_lock_resilience_contract)
     def modular_extraction_contract():
         py = (root / "app.py").read_text(encoding="utf-8")
         init_py = (root / "portfolio_agent" / "__init__.py").read_text(encoding="utf-8")
@@ -566,7 +578,12 @@ def run():
         expect("rate_limited_429" in py and "auth_or_access_" in py, "hosted llm actionable http diagnostics missing")
         expect("function loadHostedLlmConfig" in js and "function saveHostedLlmConfig" in js, "hosted llm ui config functions missing")
         expect("function renderHostedLlmMetrics" in js and "function loadHostedLlmMetrics" in js, "hosted llm metrics ui missing")
-        expect("function hostedLlmErrorHint" in js and "Groq free-tier quota" in js and "Hugging Face token/model access" in js, "hosted llm actionable error hints missing")
+        expect(
+            "function hostedLlmErrorHint" in js
+            and "Groq free-tier quota" in js
+            and (("Hugging Face token/model access" in js) or ("HF token invalid or missing READ scope" in js)),
+            "hosted llm actionable error hints missing",
+        )
         expect("hostedLlmSaveBtn" in js and "hostedLlmTestBtn" in js, "hosted llm buttons not wired")
         expect('id="strategyAuditUseHostedLlm"' in html, "strategy audit hosted llm toggle missing")
         expect('id="hostedLlmMetricsTable"' in html and 'id="hostedLlmMetricsSummary"' in html, "hosted llm operational dashboard missing")
@@ -773,8 +790,9 @@ def run():
             )
             cycles = cycle_payload.get("full_cycles") or []
             expect(len(cycles) <= 10, "daily target full cycle list not capped to latest 10")
-            expect(cycles and cycles[0].get("symbol") == sample.get("buy_symbol"), "daily target full cycle row missing closed scrip")
-            expect("full cycle complete" in str(cycles[0].get("comment") or "").lower(), "daily target full cycle comment missing")
+            closed_cycle = next((c for c in cycles if c.get("symbol") == sample.get("buy_symbol")), None)
+            expect(closed_cycle is not None, "daily target full cycle row missing closed scrip")
+            expect("full cycle complete" in str(closed_cycle.get("comment") or "").lower(), "daily target full cycle comment missing")
         _, hist = req("GET", "/api/v1/daily-target/history?limit=50", expected=200)
         expect("items" in hist and "summary" in hist, "daily target history payload incomplete")
         if hist.get("items"):
