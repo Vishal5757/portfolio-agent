@@ -296,3 +296,10 @@ Files: app.py, web/app.js, web/index.html, tools/full_system_smoke_test.py
 Tests: py_compile OK; button_contract_test PASS; full_system_smoke_test TOTAL=84 FAIL=0; git diff --check OK
 Next: Commit and push code files only; keep cowork.md uncommitted as live log.
 Blockers: none
+
+### 2026-04-29 11:16 IST | Claude | verify
+State: Skip bias for skipped trades added. _daily_target_skip_bias_map() queries skipped pairs (30-day window) and applies decayed sell/buy penalties: -8 same-day, -4 last 3 days, -1.5 older. Applied to sell_score and buy_score in build_daily_target_suggestions() so skipped symbols rank lower on refresh. skip_sell_penalty/skip_buy_penalty exposed in candidate dict. Tests: py_compile OK, smoke TOTAL=84 FAIL=0. Uncommitted: app.py only.
+Files: app.py
+Tests: -
+Next: Codex: commit skip bias or claim next item
+Blockers: none

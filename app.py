@@ -12291,6 +12291,51 @@ def compute_daily_target_performance(conn):
     }
 
 
+def _daily_target_skip_bias_map(conn, lookback_days=30, same_day_penalty=-8.0, recent_penalty=-4.0, old_penalty=-1.5):
+    """Return a per-symbol penalty dict derived from previously skipped pairs.
+
+    Skipping a trade signals the user dislikes that rotation.  Applying a
+    negative score offset makes the planner demote those symbols so they don't
+    keep re-surfacing in fresh plans.  Penalty decays with age so symbols can
+    return after enough time has passed.
+
+    Returns dict keyed by UPPER symbol with sub-keys ``sell_penalty`` and
+    ``buy_penalty`` (both negative floats).
+    """
+    cutoff = (ist_now().date() - __import__("datetime").timedelta(days=lookback_days)).isoformat()
+    today = ist_now().date().isoformat()
+    rows = conn.execute(
+        """
+        SELECT sell_symbol, buy_symbol,
+               COALESCE(updated_at, created_at) AS skipped_at
+        FROM daily_target_plan_pairs
+        WHERE LOWER(state) = 'skipped'
+          AND COALESCE(updated_at, created_at) >= ?
+        ORDER BY skipped_at DESC
+        """,
+        (cutoff,),
+    ).fetchall()
+    bias = {}
+    for r in rows:
+        skipped_day = str(r["skipped_at"] or "")[:10]
+        if skipped_day == today:
+            penalty = same_day_penalty
+        elif skipped_day >= (ist_now().date() - __import__("datetime").timedelta(days=3)).isoformat():
+            penalty = recent_penalty
+        else:
+            penalty = old_penalty
+        for sym, role in (
+            (symbol_upper(r["sell_symbol"]), "sell_penalty"),
+            (symbol_upper(r["buy_symbol"]), "buy_penalty"),
+        ):
+            if not sym:
+                continue
+            entry = bias.setdefault(sym, {"sell_penalty": 0.0, "buy_penalty": 0.0})
+            # Accumulate but cap so a single heavily-skipped stock doesn't go unbounded.
+            entry[role] = max(entry[role] + penalty, same_day_penalty * 2)
+    return bias
+
+
 def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct=1.0, top_n=5):
     seed = round(clamp(parse_float(seed_capital, 10000.0), 1000.0, 1_000_000_000.0), 2)
     target_pct = round(clamp(parse_float(target_profit_pct, 1.0), 0.1, 25.0), 2)
@@ -12321,6 +12366,7 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
         w_chart=parse_float(cfg.get("w_chart"), 0.0),
     )
     guard_map = _daily_target_guard_map(conn)
+    skip_bias_map = _daily_target_skip_bias_map(conn)
     virtual_open = _daily_target_virtual_open_positions(conn)
     holdings = []
     for item in collect_strategy_universe(conn, lookback_days=30):
@@ -12382,18 +12428,21 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
             2,
         )
         tax_alpha_score = round((tax_alpha_value / max(trade_capital, 1.0)) * 500.0, 4)
+        skip_bias = skip_bias_map.get(symbol, {})
         sell_score = (
             max(0.0, -expected_move_score)
             + max(0.0, -momentum) * 0.4
             + max(0.0, total_return) * 0.08
             + (6.0 if direction == "DOWN" else (1.0 if direction == "MIXED" else 0.0))
             + tax_alpha_score
+            + parse_float(skip_bias.get("sell_penalty"), 0.0)
         )
         buy_score = (
             max(0.0, expected_move_score)
             + max(0.0, momentum) * 0.4
             + max(0.0, parse_float(intel.get("confidence"), 0.0)) * 10.0
             + (6.0 if direction == "UP" else (1.0 if direction == "MIXED" else 0.0))
+            + parse_float(skip_bias.get("buy_penalty"), 0.0)
         )
         reason = _harvest_priority_reason(
             direction,
@@ -12429,6 +12478,8 @@ def build_daily_target_suggestions(conn, seed_capital=10000.0, target_profit_pct
                 "ltcg_loss_available": ltcg_loss_available,
                 "stcg_gain_available": stcg_gain_available,
                 "ltcg_gain_available": ltcg_gain_available,
+                "skip_sell_penalty": round(parse_float(skip_bias.get("sell_penalty"), 0.0), 4),
+                "skip_buy_penalty": round(parse_float(skip_bias.get("buy_penalty"), 0.0), 4),
             }
         )
 
